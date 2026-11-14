@@ -1,0 +1,32 @@
+{
+  "id": "pushary",
+  "name": "Pushary",
+  "description": "Asks you on your phone before OpenClaw runs a gated tool call, and blocks the call unless you approve it.",
+  "categories": [
+    "security"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "uiHints": {
+    "gatedTools": {
+      "label": "More tools that need your approval",
+      "help": "OpenClaw tool ids to gate on top of the defaults (exec, process input, and the plugins, gateway and openclaw actions that change OpenClaw), for example message or browser."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "gatedTools": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$"
+        }
+      }
+    }
+  }
+}
