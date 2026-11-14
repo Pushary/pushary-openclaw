@@ -1,6 +1,6 @@
 {
   "name": "@pushary/openclaw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Phone approvals for OpenClaw. Pushary asks you before your AI agent runs a gated tool call, and blocks the call unless you approve it.",
   "author": "Pushary <business@pushary.com>",
   "homepage": "https://pushary.com/human-in-the-loop-openclaw",
@@ -25,6 +25,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
