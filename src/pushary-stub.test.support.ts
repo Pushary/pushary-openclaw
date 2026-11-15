@@ -12,6 +12,7 @@ export interface StubCall {
   readonly tool: string
   readonly arguments: Readonly<Record<string, unknown>>
   readonly authorization: string | undefined
+  readonly body: string
 }
 
 export type StubScript = (call: StubCall, calls: readonly StubCall[]) => StubAnswer
@@ -37,7 +38,7 @@ const callOf = (body: string, authorization: string | undefined): StubCall | nul
   const envelope: unknown = JSON.parse(body)
   if (!isRecord(envelope) || !isRecord(envelope.params)) return null
   const { name, arguments: args } = envelope.params
-  return typeof name === 'string' && isRecord(args) ? { tool: name, arguments: args, authorization } : null
+  return typeof name === 'string' && isRecord(args) ? { tool: name, arguments: args, authorization, body } : null
 }
 
 const toolResult = (value: unknown): string =>

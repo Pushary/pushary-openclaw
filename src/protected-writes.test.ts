@@ -77,6 +77,23 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
     assert.equal(asks(write(join('hooks', 'x', 'handler.js'))), true)
   })
 
+  it('gates the workspace .openclaw folder, where OpenClaw finds workspace plugins before the installed ones, in every spelling', () => {
+    const pluginFile = join('.openclaw', 'extensions', 'pushary', 'index.js')
+    assert.equal(asks(write(join(workspace, pluginFile))), true)
+    assert.equal(asks(write(`~/.openclaw/workspace/${pluginFile}`)), true)
+    assert.equal(asks(write(pluginFile)), true)
+    assert.equal(asks(write(join(workspace, '.openclaw', 'extensions', 'pushary', 'openclaw.plugin.json'))), true)
+    assert.equal(asks(edit(join(workspace, '.openclaw', 'openclaw.json'))), true)
+    assert.equal(asks(patch(`*** Begin Patch\n*** Add File: ${join(workspace, pluginFile)}\n+export default {}\n*** End Patch`)), true)
+  })
+
+  it('gates the workspace .openclaw folder when the workspace sits outside the state directory', () => {
+    const outside = { ...system, workspaceFor: () => project }
+    const pluginFile = join('.openclaw', 'extensions', 'pushary', 'index.js')
+    assert.equal(asks(write(join(project, pluginFile)), outside), true)
+    assert.equal(asks(write(pluginFile), outside), true)
+  })
+
   it('gates the workspace hooks folder when the workspace sits outside the state directory', () => {
     const outside = { ...system, workspaceFor: () => project }
     assert.equal(asks(write(join(project, 'hooks', 'x', 'handler.js')), outside), true)
@@ -154,6 +171,17 @@ describe('a session spawned into another folder', () => {
     assert.equal(spawn({ cwd: join(workspace, 'hooks') }), true)
     assert.equal(spawn({ cwd: join(workspace, 'hooks', 'x') }), true)
     assert.equal(spawn({ cwd: 'hooks' }), true)
+  })
+
+  it('asks when the folder is the workspace .openclaw folder', () => {
+    assert.equal(spawn({ cwd: join(workspace, '.openclaw') }), true)
+    assert.equal(spawn({ cwd: join(workspace, '.openclaw', 'extensions') }), true)
+  })
+
+  it('asks for every ACP session, whose harness runs its own tools outside before_tool_call', () => {
+    assert.equal(spawn({ runtime: 'acp', agentId: 'codex', task: 'fix the tests' }), true)
+    assert.equal(spawn({ runtime: ' ACP ', cwd: workspace }), true)
+    assert.equal(spawn({ runtime: 'subagent', task: 'fix the tests' }), false)
   })
 
   it('asks when the folder is not text, is empty, or comes from a project or managed worktree it cannot see', () => {

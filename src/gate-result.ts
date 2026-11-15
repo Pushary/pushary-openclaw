@@ -1,10 +1,10 @@
-import { APPROVAL_DESCRIPTION_MAX, APPROVAL_TITLE_MAX, truncated, type ApprovalQuestion } from './approval-question.js'
+import { ACTION_BODY_MAX, APPROVAL_DESCRIPTION_MAX, APPROVAL_TITLE_MAX, characterCount, truncated, type ApprovalQuestion } from './approval-question.js'
 import { API_KEY_VARIABLE, BASE_URL_VARIABLE, type ConnectionReading } from './connection.js'
 import { MIN_HOST_VERSION } from './host-version.js'
 import type { GateOutcome } from './gate.js'
 import type { OpenClawApprovalDecision, OpenClawBeforeToolCallResult } from './host-api.js'
 
-export const SETUP_COMMAND = 'npx pushary@latest setup'
+export const SETUP_COMMAND = 'npx pushary@latest setup --agents openclaw'
 export const DEVICES_URL = 'https://pushary.com/dashboard/agent/settings'
 export const HAND_BACK_DECISIONS: readonly OpenClawApprovalDecision[] = ['allow-once', 'deny']
 
@@ -34,10 +34,16 @@ const unavailableReason = (toolName: string, outcome: Extract<GateOutcome, { rea
   return `Pushary could not be reached, so nobody could approve this ${toolName} call and it was blocked. Nothing ran. Try again in a moment.`
 }
 
+const shortenedDescription = (text: string): string => {
+  if (text.length <= APPROVAL_DESCRIPTION_MAX) return text
+  const notice = ` (shortened from ${characterCount(text.length)} characters: read the whole call in OpenClaw before you allow it)`
+  return `${truncated(text, APPROVAL_DESCRIPTION_MAX - notice.length)}${notice}`
+}
+
 const handedBack = (question: ApprovalQuestion): OpenClawBeforeToolCallResult => ({
   requireApproval: {
     title: truncated(question.question, APPROVAL_TITLE_MAX),
-    description: truncated(`${question.context} ${question.action}`, APPROVAL_DESCRIPTION_MAX),
+    description: shortenedDescription(`${question.context} ${question.action}`),
     severity: 'warning',
     allowedDecisions: [...HAND_BACK_DECISIONS],
   },
@@ -68,7 +74,10 @@ export const openClawResultFor = (outcome: GateOutcome, question: ApprovalQuesti
   }
 }
 
+export const tooLongToReviewResultFor = (toolName: string, length: number): OpenClawBeforeToolCallResult =>
+  blocked(`This ${toolName} call is too long to show in full: ${characterCount(length)} characters, and Pushary shows at most ${characterCount(ACTION_BODY_MAX)}. It was blocked, not sent for an approval nobody could read. Nothing ran. Split it into smaller steps.`)
+
 export const notConnectedResultFor = (problem: ConnectionProblem, toolName: string): OpenClawBeforeToolCallResult =>
   problem === 'missing_api_key'
-    ? blocked(`Pushary is not set up for OpenClaw on this machine: ${API_KEY_VARIABLE} is missing, so this ${toolName} call was blocked. Run ${SETUP_COMMAND}, or add ${API_KEY_VARIABLE} to ~/.openclaw/.env, then restart the OpenClaw gateway.`)
+    ? blocked(`Pushary is not set up for OpenClaw on this machine: ${API_KEY_VARIABLE} is missing, so this ${toolName} call was blocked. Run ${SETUP_COMMAND}, or create an API key at ${DEVICES_URL} and add ${API_KEY_VARIABLE}=<key> to ~/.openclaw/.env, then restart the OpenClaw gateway.`)
     : blocked(`${BASE_URL_VARIABLE} is not https://pushary.com or https://www.pushary.com, so this ${toolName} call was blocked. Remove it, then restart the OpenClaw gateway.`)

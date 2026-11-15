@@ -8,21 +8,21 @@ const call = (toolName: string, params: Readonly<Record<string, unknown>> = {}):
 describe('gate settings', () => {
   it('gates exec, process and the tools that can change OpenClaw itself when nothing is configured', () => {
     assert.deepEqual(readGateSettings(undefined), { kind: 'defaulted', settings: { gatedTools: DEFAULT_GATED_TOOLS } })
-    assert.deepEqual(readGateSettings({}), { kind: 'defaulted', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal'] } })
+    assert.deepEqual(readGateSettings({}), { kind: 'defaulted', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes'] } })
   })
 
   it('adds configured tools to the defaults instead of replacing them', () => {
-    assert.deepEqual(readGateSettings({ gatedTools: ['message'] }), { kind: 'configured', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'message'] }, rejected: [] })
+    assert.deepEqual(readGateSettings({ gatedTools: ['message'] }), { kind: 'configured', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'message'] }, rejected: [] })
   })
 
   it('reads configured ids the way OpenClaw names its tools', () => {
     const reading = readGateSettings({ gatedTools: [' Bash ', 'cron', 'tool_call', 'apply-patch', 'exec_command', 'agent'] })
-    assert.deepEqual(reading.settings.gatedTools, ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'dispatch_action', 'apply_patch', 'spawn_agent'])
+    assert.deepEqual(reading.settings.gatedTools, ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'dispatch_action', 'apply_patch', 'spawn_agent'])
   })
 
   it('reports entries that are not tool ids and still gates the defaults', () => {
     const reading = readGateSettings({ gatedTools: ['message', '*', 3, ' '] })
-    assert.deepEqual(reading, { kind: 'configured', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'message'] }, rejected: ['*', '3', ' '] })
+    assert.deepEqual(reading, { kind: 'configured', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'message'] }, rejected: ['*', '3', ' '] })
   })
 
   for (const [name, value] of [
@@ -30,13 +30,13 @@ describe('gate settings', () => {
     ['a list instead of an object', ['exec']],
   ] as const) {
     it(`ignores ${name} and gates the defaults`, () => {
-      assert.deepEqual(readGateSettings(value), { kind: 'invalid', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal'] } })
+      assert.deepEqual(readGateSettings(value), { kind: 'invalid', settings: { gatedTools: ['exec', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes'] } })
     })
   }
 
   it('registers every spelling the host may send for exec, and never a name OpenClaw refuses', () => {
     const matcher = hookMatcherFor(readGateSettings({ gatedTools: ['bash', 'cron'] }).settings)
-    assert.deepEqual(matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
+    assert.deepEqual(matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
     for (const refused of ['bash', 'exec_command', 'apply-patch', 'agent', 'cron', 'tool_call']) assert.equal(matcher.includes(refused), false, refused)
   })
 })
@@ -95,6 +95,15 @@ describe('which calls need approval', () => {
       for (const action of ['status', 'list', 'get', 'runs', 'next_check']) assert.equal(needsApproval(defaults, call(name, { action })), false, `${name} ${action}`)
     }
     assert.equal(needsApproval(defaults, call('automations', { action: 'add', job: { schedule: { kind: 'stream', command: ['sh', '-c', 'id'] } } })), true)
+  })
+
+  it('gates a command on a paired node, pairing and capture, and lets the nodes reads through', () => {
+    for (const action of ['run', 'approve', 'reject', 'camera_snap', 'camera_clip', 'screen_record', 'location_get', 'notifications_action', 'something_new']) {
+      assert.equal(needsApproval(defaults, call('nodes', { action, node: 'mac-mini' })), true, action)
+    }
+    for (const action of ['status', 'describe', 'pending', 'notify', 'camera_list', 'notifications_list', 'device_status', 'device_info', 'device_permissions', 'device_health']) {
+      assert.equal(needsApproval(defaults, call('nodes', { action })), false, action)
+    }
   })
 
   it('gates terminal input and every terminal action except read and list', () => {

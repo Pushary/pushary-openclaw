@@ -18,7 +18,7 @@ import {
   type PusharyStub,
   type StubScript,
 } from './pushary-stub.test.support.js'
-import { WITHDRAW_ATTEMPTS } from './gate.js'
+import { UNANSWERED_POLL_PAUSE_MS, WITHDRAW_ATTEMPTS, type GateClock } from './gate.js'
 import type { FileWriteCall } from './protected-writes.js'
 import { POLL_TIMEOUT_MAX_MS } from './pushary-client.js'
 import { DEFAULT_GATED_TOOLS } from './settings.js'
@@ -47,10 +47,10 @@ afterEach(async () => {
 
 let requestCounter = 0
 
-const environmentFor = (baseUrl: string, reading?: ConnectionReading): GateEnvironment => ({
+const environmentFor = (baseUrl: string, reading?: ConnectionReading, clock: GateClock = systemClock): GateEnvironment => ({
   readConnection: () => reading ?? { kind: 'ready', connection: { baseUrl, apiKey: API_KEY, machineId: 'machine-1' } },
   questionsFor: connection => createPusharyQuestions(connection),
-  clock: systemClock,
+  clock,
   newRequestId: () => `request-${++requestCounter}`,
 })
 
@@ -62,6 +62,7 @@ const gateWith = async (
     readonly context?: OpenClawToolContext
     readonly handBackSurface?: HandBackSurface
     readonly reachesOpenClawState?: (call: FileWriteCall) => boolean
+    readonly clock?: GateClock
   } = {},
 ): Promise<OpenClawBeforeToolCallResult | undefined> => {
   stub = await startPusharyStub(script)
@@ -71,7 +72,7 @@ const gateWith = async (
     withdrawReserveMs: WITHDRAW_RESERVE_FOR_TESTS_MS,
     handBackSurface: options.handBackSurface ?? 'openclaw_prompt',
     reachesOpenClawState: options.reachesOpenClawState ?? (() => false),
-  }, environmentFor(stub.baseUrl))
+  }, environmentFor(stub.baseUrl, undefined, options.clock))
   return handler(options.event ?? EXEC_CALL, options.context ?? CONTEXT)
 }
 
@@ -276,6 +277,18 @@ describe('every other outcome blocks the call', () => {
     assertBlocked(await handler(EXEC_CALL, CONTEXT), /PUSHARY_API_KEY is missing/)
     assert.equal(stub.calls().length, 0)
   })
+
+  it('says how to add a key whichever way the plugin was installed', async () => {
+    stub = await startPusharyStub(() => reply(PENDING_QUESTION))
+    const handler = createApprovalGateHandler({ settings: { gatedTools: DEFAULT_GATED_TOOLS }, holdMs: SHORT_HOLD_MS, withdrawReserveMs: WITHDRAW_RESERVE_FOR_TESTS_MS, handBackSurface: 'openclaw_prompt', reachesOpenClawState: () => false }, environmentFor(stub.baseUrl, { kind: 'missing_api_key' }))
+    assertBlocked(await handler(EXEC_CALL, CONTEXT), /Run npx pushary@latest setup --agents openclaw, or create an API key at https:\/\/pushary\.com\/dashboard\/agent\/settings and add PUSHARY_API_KEY=<key> to ~\/\.openclaw\/\.env, then restart the OpenClaw gateway\./)
+  })
+
+  it('blocks a call too long to show in full without calling Pushary', async () => {
+    const result = await gateWith(() => reply(PENDING_QUESTION), { event: { toolName: 'exec', params: { command: 'echo a; '.repeat(501) } } })
+    assertBlocked(result, /^This exec call is too long to show in full: 4,008 characters/)
+    assert.equal(stub?.calls().length, 0)
+  })
 })
 
 describe('a decision Pushary hands back to OpenClaw', () => {
@@ -289,6 +302,16 @@ describe('a decision Pushary hands back to OpenClaw', () => {
     assert.doesNotMatch(`${result?.requireApproval?.title} ${result?.requireApproval?.description}`, /hunter2/)
     assert.ok((result?.requireApproval?.title.length ?? 0) <= 80)
     assert.equal(cancelCount(), 1)
+  })
+
+  it('says so when OpenClaw\'s own prompt cannot hold the whole call', async () => {
+    const result = await gateWith(scriptByTool({
+      ask_user: () => reply({ correlationId: 'q-1', status: 'terminal', answered: false, mode: 'terminal_only', handoffAction: 'cancel_then_ask_in_current_client' }),
+      cancel_question: () => reply(WITHDRAWN),
+    }), { event: { toolName: 'exec', params: { command: 'echo a; '.repeat(100) } } })
+    const description = result?.requireApproval?.description ?? ''
+    assert.ok(description.length <= 512, description)
+    assert.match(description, /\(shortened from \d[\d,]* characters: read the whole call in OpenClaw before you allow it\)$/)
   })
 
   it('asks in OpenClaw once a push_first window passes without an answer', async () => {
@@ -456,14 +479,32 @@ describe('a withdrawal stays inside the reserve the hook keeps for it', () => {
   })
 })
 
+const clockThatMovesOnlyWhenTheGateSleeps = (): { readonly clock: GateClock; readonly pauses: number[] } => {
+  let now = 0
+  const pauses: number[] = []
+  return {
+    pauses,
+    clock: {
+      monotonicMs: () => now,
+      wallMs: () => Date.UTC(2026, 10, 15) + now,
+      sleep: async ms => {
+        pauses.push(ms)
+        now += ms
+      },
+    },
+  }
+}
+
 describe('polling paces itself like the CLI hook', () => {
-  it('pauses two seconds after every poll that comes back unanswered', { timeout: 15_000 }, async () => {
+  it('pauses two seconds after every poll that comes back unanswered', async () => {
+    const { clock, pauses } = clockThatMovesOnlyWhenTheGateSleeps()
     await gateWith(scriptByTool({
       ask_user: () => reply(PENDING_QUESTION),
       wait_for_answer: () => reply(STILL_PENDING),
       cancel_question: () => reply(WITHDRAWN),
-    }), { holdMs: 4_500 })
-    assert.ok((stub?.toolCalls('wait_for_answer').length ?? 0) <= 3, `polled ${stub?.toolCalls('wait_for_answer').length} times in 4.5 s`)
+    }), { holdMs: 4_500, clock })
+    assert.equal(stub?.toolCalls('wait_for_answer').length, 3)
+    assert.deepEqual(pauses, [UNANSWERED_POLL_PAUSE_MS, UNANSWERED_POLL_PAUSE_MS, 500])
   })
 
   it('asks the server to hold one poll for at most 30 seconds', async () => {

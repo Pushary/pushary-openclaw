@@ -58,14 +58,14 @@ describe('registering the gate', () => {
     registerApprovalGate(api, environment)
     assert.equal(registrations.length, 1)
     assert.equal(registrations[0]?.hookName, 'before_tool_call')
-    assert.deepEqual(registrations[0]?.options, { matcher: ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'write', 'edit', 'apply_patch', 'sessions_spawn'], timeoutMs: 300_000 })
+    assert.deepEqual(registrations[0]?.options, { matcher: ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'write', 'edit', 'apply_patch', 'sessions_spawn'], timeoutMs: 300_000 })
     assert.deepEqual(warnings, [])
   })
 
   it('registers a configured alias under the name OpenClaw accepts', () => {
     const { api, registrations } = fakeApi({ pluginConfig: { gatedTools: ['bash', 'cron'] } })
     registerApprovalGate(api, environment)
-    assert.deepEqual(registrations[0]?.options?.matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
+    assert.deepEqual(registrations[0]?.options?.matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
   })
 
   it('falls back to checking names itself, with the same aliases, when OpenClaw refuses the tool list', async () => {
@@ -81,7 +81,7 @@ describe('registering the gate', () => {
   it('reports an invalid list as an error and still gates the defaults', () => {
     const { api, registrations, errors } = fakeApi({ pluginConfig: { gatedTools: '*' } })
     registerApprovalGate(api, environment)
-    assert.deepEqual(registrations[0]?.options?.matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
+    assert.deepEqual(registrations[0]?.options?.matcher, ['exec', 'shell', 'shell_command', 'process', 'plugins', 'gateway', 'openclaw', 'automations', 'terminal', 'nodes', 'write', 'edit', 'apply_patch', 'sessions_spawn'])
     assert.match(errors[0] ?? '', /was ignored/)
   })
 

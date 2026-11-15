@@ -17,6 +17,8 @@ const FILE_REFERENCE_PREFIX = '@'
 const HOME_PREFIX = '~'
 const MISSING_PATH_CODES: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR'])
 const WORKSPACE_HOOKS_DIRECTORY = 'hooks'
+const WORKSPACE_OPENCLAW_DIRECTORY = '.openclaw'
+const WORKSPACE_FOLDERS_OPENCLAW_LOADS: readonly string[] = [WORKSPACE_HOOKS_DIRECTORY, WORKSPACE_OPENCLAW_DIRECTORY]
 const RISKY_RELATIVE_STARTS: readonly string[] = ['.pushary', '.config']
 
 export interface ServiceFileLocation {
@@ -53,6 +55,7 @@ interface ComparablePaths {
   readonly protectedTrees: readonly string[]
   readonly serviceFiles: readonly ServiceFileLocation[]
   readonly workspace: string | null
+  readonly workspaceFoldersOpenClawLoads: readonly string[]
   readonly riskyRelativeStarts: ReadonlySet<string>
 }
 
@@ -111,6 +114,7 @@ const comparablePathsFor = (locations: OpenClawStateLocations, system: WriteGuar
     serviceFiles: locations.serviceFiles.flatMap(location =>
       spellingsOfLocation(location.directory, system).map(directory => ({ directory, namePrefix: comparable(location.namePrefix, system) }))),
     workspace: workspaceCanonical === null ? null : comparable(workspaceCanonical, system),
+    workspaceFoldersOpenClawLoads: WORKSPACE_FOLDERS_OPENCLAW_LOADS.map(folder => comparable(folder, system)),
     riskyRelativeStarts: new Set([
       ...locations.stateDirectories.map(state => comparable(basename(state), system)),
       ...locations.configFiles.map(file => comparable(basename(file), system)),
@@ -122,8 +126,11 @@ const comparablePathsFor = (locations: OpenClawStateLocations, system: WriteGuar
 const isServiceFile = (path: string, services: readonly ServiceFileLocation[]): boolean =>
   services.some(service => firstComponentUnder(path, service.directory)?.startsWith(service.namePrefix) === true)
 
-const isInWorkspaceHooks = (path: string, workspace: string | null): boolean =>
-  workspace !== null && firstComponentUnder(path, workspace) === WORKSPACE_HOOKS_DIRECTORY
+const isInAWorkspaceFolderOpenClawLoads = (path: string, paths: ComparablePaths): boolean => {
+  if (paths.workspace === null) return false
+  const component = firstComponentUnder(path, paths.workspace)
+  return component !== null && paths.workspaceFoldersOpenClawLoads.includes(component)
+}
 
 const isInWorkspaceUnderState = (path: string, paths: ComparablePaths): boolean => {
   const { workspace } = paths
@@ -135,7 +142,7 @@ const isProtectedLocation = (path: string, paths: ComparablePaths): boolean => {
   if (paths.configFiles.includes(path)) return true
   if (paths.protectedTrees.some(tree => isSameOrInside(path, tree))) return true
   if (isServiceFile(path, paths.serviceFiles)) return true
-  if (isInWorkspaceHooks(path, paths.workspace)) return true
+  if (isInAWorkspaceFolderOpenClawLoads(path, paths)) return true
   if (!paths.stateDirectories.some(state => isSameOrInside(path, state))) return false
   return !isInWorkspaceUnderState(path, paths)
 }
@@ -246,6 +253,14 @@ export const SESSIONS_SPAWN_TOOL = 'sessions_spawn'
 export const SPAWN_FOLDER_PARAMETER = 'cwd'
 const SPAWN_SOURCES_IT_CANNOT_SEE: readonly string[] = ['projectId', 'projectGitUrl', 'worktree']
 
+const SPAWN_RUNTIME_PARAMETER = 'runtime'
+const ACP_RUNTIME = 'acp'
+
+export const startsAnAcpSession = (params: Readonly<Record<string, unknown>>): boolean => {
+  const runtime = params[SPAWN_RUNTIME_PARAMETER]
+  return typeof runtime === 'string' && runtime.trim().toLowerCase() === ACP_RUNTIME
+}
+
 const namesAFolderItCannotSee = (params: Readonly<Record<string, unknown>>): boolean =>
   SPAWN_SOURCES_IT_CANNOT_SEE.some(name => params[name] !== undefined && params[name] !== false)
 
@@ -257,13 +272,13 @@ const spawnFolderVerdict = (raw: unknown, paths: ComparablePaths, system: WriteG
   if (canonical === null) return 'uncertain'
   const folder = comparable(canonical, system)
   if (!isSameOrInside(folder, paths.workspace)) return 'protected'
-  return isInWorkspaceHooks(folder, paths.workspace) ? 'protected' : 'clear'
+  return isInAWorkspaceFolderOpenClawLoads(folder, paths) ? 'protected' : 'clear'
 }
 
 export const spawnsOutsideTheWorkspace = (locations: OpenClawStateLocations, system: WriteGuardSystem, call: FileWriteCall): boolean => {
   if (call.toolId !== SESSIONS_SPAWN_TOOL) return false
   const { params } = call.event
-  if (namesAFolderItCannotSee(params)) return true
+  if (startsAnAcpSession(params) || namesAFolderItCannotSee(params)) return true
   if (params[SPAWN_FOLDER_PARAMETER] === undefined) return false
   return spawnFolderVerdict(params[SPAWN_FOLDER_PARAMETER], comparablePathsFor(locations, system, call.agentId), system) !== 'clear'
 }

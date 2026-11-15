@@ -13,6 +13,7 @@ export const GATEWAY_TOOL = 'gateway'
 export const OPENCLAW_SYSTEM_TOOL = 'openclaw'
 export const AUTOMATIONS_TOOL = 'automations'
 export const TERMINAL_TOOL = 'terminal'
+export const NODES_TOOL = 'nodes'
 export const TOOL_ACTION_PARAMETER = 'action'
 
 const TOOL_ID_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,99}$/
@@ -42,6 +43,10 @@ const OPENCLAW_SYSTEM_ACTIONS_WITHOUT_APPROVAL: ReadonlySet<string> = new Set([
 
 const AUTOMATIONS_ACTIONS_WITHOUT_APPROVAL: ReadonlySet<string> = new Set(['status', 'list', 'get', 'runs', 'next_check'])
 const TERMINAL_ACTIONS_WITHOUT_APPROVAL: ReadonlySet<string> = new Set(['read', 'list'])
+const NODES_ACTIONS_WITHOUT_APPROVAL: ReadonlySet<string> = new Set([
+  'status', 'describe', 'pending', 'notify', 'camera_list', 'notifications_list',
+  'device_status', 'device_info', 'device_permissions', 'device_health',
+])
 
 const ACTIONS_WITHOUT_APPROVAL_BY_TOOL: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   [PROCESS_TOOL, PROCESS_ACTIONS_WITHOUT_APPROVAL],
@@ -50,9 +55,10 @@ const ACTIONS_WITHOUT_APPROVAL_BY_TOOL: ReadonlyMap<string, ReadonlySet<string>>
   [OPENCLAW_SYSTEM_TOOL, OPENCLAW_SYSTEM_ACTIONS_WITHOUT_APPROVAL],
   [AUTOMATIONS_TOOL, AUTOMATIONS_ACTIONS_WITHOUT_APPROVAL],
   [TERMINAL_TOOL, TERMINAL_ACTIONS_WITHOUT_APPROVAL],
+  [NODES_TOOL, NODES_ACTIONS_WITHOUT_APPROVAL],
 ])
 
-export const DEFAULT_GATED_TOOLS: readonly string[] = [EXEC_TOOL, PROCESS_TOOL, PLUGINS_TOOL, GATEWAY_TOOL, OPENCLAW_SYSTEM_TOOL, AUTOMATIONS_TOOL, TERMINAL_TOOL]
+export const DEFAULT_GATED_TOOLS: readonly string[] = [EXEC_TOOL, PROCESS_TOOL, PLUGINS_TOOL, GATEWAY_TOOL, OPENCLAW_SYSTEM_TOOL, AUTOMATIONS_TOOL, TERMINAL_TOOL, NODES_TOOL]
 
 export interface GateSettings {
   readonly gatedTools: readonly string[]

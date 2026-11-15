@@ -11,7 +11,7 @@
   "uiHints": {
     "gatedTools": {
       "label": "More tools that need your approval",
-      "help": "OpenClaw tool ids to gate on top of the defaults (exec, process input, and the plugins, gateway and openclaw actions that change OpenClaw), for example message or browser."
+      "help": "OpenClaw tool ids to gate on top of the defaults (exec, process input, the plugins, gateway and openclaw actions that change OpenClaw, automations, terminal input, and nodes actions such as run), for example message or browser."
     }
   },
   "configSchema": {

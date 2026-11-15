@@ -36,7 +36,7 @@ const CUT_OFF_SECRET_SHAPES: LooseSecretShapes = {
     authorizationValue: String.raw `\S+`,
     credentialAssignment: credentialAssignmentRule(CREDENTIAL_KEY, String.raw `(?:\\[\s\S]|[^"\\])*(?:"|\\?$)`, "[^']*(?:'|$)", String.raw `\S+`),
 };
-const secretRedactionRules = (shapes: LooseSecretShapes): readonly RedactionRule[] => [
+const credentialTokenRules = (shapes: LooseSecretShapes): readonly RedactionRule[] => [
     { pattern: /\bpk_[A-Za-z0-9_]+\.[A-Za-z0-9_]+/g, replacement: '[redacted]' },
     { pattern: new RegExp(String.raw `-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----${shapes.privateKeyBody}-----END[A-Z0-9 ]*PRIVATE KEY-----`, 'g'), replacement: '[redacted key]' },
     { pattern: /\bsk-[A-Za-z0-9_-]{16,}\b/g, replacement: '[redacted]' },
@@ -52,14 +52,19 @@ const secretRedactionRules = (shapes: LooseSecretShapes): readonly RedactionRule
     { pattern: /\bxai-[A-Za-z0-9]{16,}\b/g, replacement: '[redacted]' },
     { pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: '[redacted]' },
     { pattern: new RegExp(String.raw `\b([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)${shapes.urlPassword}@`, 'gi'), replacement: '$1[redacted]@' },
+];
+const secretRedactionRules = (shapes: LooseSecretShapes): readonly RedactionRule[] => [
+    ...credentialTokenRules(shapes),
     { pattern: new RegExp(String.raw `\bbearer${shapes.separator}+[A-Za-z0-9._~+/=-]+`, 'gi'), replacement: 'bearer [redacted]' },
     { pattern: new RegExp(String.raw `\bauthorization:${shapes.separator}*(?:${AUTHORIZATION_SCHEME}${shapes.separator}+)?${shapes.authorizationValue}`, 'gi'), replacement: 'authorization: [redacted]' },
     shapes.credentialAssignment,
 ];
 export const SECRET_REDACTION_RULES: readonly RedactionRule[] = secretRedactionRules(DISPLAYED_SECRET_SHAPES);
+const CREDENTIAL_TOKEN_RULES: readonly RedactionRule[] = credentialTokenRules(DISPLAYED_SECRET_SHAPES);
 const CUT_OFF_TEXT_REDACTION_RULES: readonly RedactionRule[] = secretRedactionRules(CUT_OFF_SECRET_SHAPES);
 const HIGH_ENTROPY_RULE = { pattern: /[A-Za-z0-9+/]{40,}={0,2}/g, replacement: '[redacted]' } as const;
 const applyRedactionRules = (rules: readonly RedactionRule[], text: string): string => rules.reduce((acc, rule) => acc.replace(rule.pattern, rule.replacement), text);
 export const redactSecrets = (text: string): string => applyRedactionRules(SECRET_REDACTION_RULES, text);
+export const containsCredentialToken = (text: string): boolean => applyRedactionRules(CREDENTIAL_TOKEN_RULES, text) !== text;
 export const redactSecretsFromContent = (text: string): string => applyRedactionRules(CUT_OFF_TEXT_REDACTION_RULES, text);
 export const redactSecretsDeep = (text: string): string => redactSecrets(text).replace(HIGH_ENTROPY_RULE.pattern, HIGH_ENTROPY_RULE.replacement);

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
-import { approvalQuestionFor } from './approval-question.js'
+import { approvalPreviewFor } from './approval-question.js'
 import type { ConnectionReading, PusharyConnection } from './connection.js'
 import { runApprovalGate, type GateClock } from './gate.js'
-import { notConnectedResultFor, openClawResultFor, type HandBackSurface } from './gate-result.js'
+import { notConnectedResultFor, openClawResultFor, tooLongToReviewResultFor, type HandBackSurface } from './gate-result.js'
 import { holdMsWithin, hookBudgetFrom, REQUESTED_HOOK_TIMEOUT_MS } from './hook-budget.js'
 import {
   BEFORE_TOOL_CALL_HOOK,
@@ -53,9 +53,12 @@ export const createApprovalGateHandler = (
   const reachesOpenClawState = options.reachesOpenClawState({ toolId: hostToolId(event.toolName), event, agentId: context.agentId })
   if (!needsApproval(options.settings, event) && !reachesOpenClawState) return undefined
   const agentName = askingAgentName(context.agentId)
-  const question = approvalQuestionFor(event, agentName)
+  const preview = approvalPreviewFor(event, agentName)
   const reading = environment.readConnection()
-  if (reading.kind !== 'ready') return notConnectedResultFor(reading.kind, question.toolName)
+  const toolName = preview.kind === 'reviewable' ? preview.question.toolName : preview.toolName
+  if (reading.kind !== 'ready') return notConnectedResultFor(reading.kind, toolName)
+  if (preview.kind === 'too_long') return tooLongToReviewResultFor(toolName, preview.length)
+  const { question } = preview
   const sessionId = sessionIdOf(context)
   const outcome = await runApprovalGate({
     question,
