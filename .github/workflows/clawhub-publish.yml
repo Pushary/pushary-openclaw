@@ -137,7 +137,6 @@ jobs:
     uses: openclaw/clawhub/.github/workflows/package-publish.yml@a1567fb752e07d2b5951e4fd48e2e7351da89874 # v0.26.0
     with:
       dry_run: ${{ inputs.dry_run }}
-      owner: pushary
       family: code-plugin
       version: ${{ needs.pack.outputs.version }}
       package_artifact_name: npm-tarball
