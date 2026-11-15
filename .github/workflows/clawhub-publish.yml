@@ -1,0 +1,176 @@
+# Publishes @pushary/openclaw to ClawHub once npm has the version.
+#
+# This file lives in the monorepo at packages/openclaw-plugin/.github and the
+# mirror sync copies it to Pushary/pushary-openclaw, where it runs. A push that
+# changes package.json starts the request job: it waits until npm serves the
+# version and, when ClawHub does not have it yet, dispatches this workflow.
+# ClawHub accepts trusted publishing, with no stored token, only on
+# workflow_dispatch runs. The publish uploads the exact tarball npm serves,
+# after checking it against npm's integrity hash, so both registries hold the
+# same bytes.
+#
+# One-time setup, by a manager of the @pushary org on ClawHub:
+#   clawhub package trusted-publisher set @pushary/openclaw \
+#     --repository Pushary/pushary-openclaw --workflow-filename clawhub-publish.yml
+#
+# To check a version without publishing it:
+#   gh workflow run clawhub-publish.yml -R Pushary/pushary-openclaw -f dry_run=true
+name: Publish to ClawHub
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check the package without publishing it.
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: clawhub-publish-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: "@pushary/openclaw"
+  CLAWHUB_PACKAGE_API: https://clawhub.ai/api/v1/packages/%40pushary%2Fopenclaw
+
+jobs:
+  request:
+    name: request a publish of a version ClawHub does not have
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+
+      - name: Wait for npm, then dispatch the publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          state="$(curl -fsS "$CLAWHUB_PACKAGE_API/versions/$version/publication" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).state")"
+          if [ "$state" != "absent" ]; then
+            echo "ClawHub already has $PACKAGE_NAME@$version ($state). Nothing to publish."
+            exit 0
+          fi
+          for attempt in $(seq 1 40); do
+            if npm view "$PACKAGE_NAME@$version" version > /dev/null 2>&1; then
+              gh workflow run clawhub-publish.yml --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false
+              echo "Requested the ClawHub publish of $PACKAGE_NAME@$version."
+              exit 0
+            fi
+            echo "npm does not serve $PACKAGE_NAME@$version yet (check $attempt of 40)."
+            sleep 60
+          done
+          echo "::error::npm still does not serve $PACKAGE_NAME@$version after 40 minutes, so nothing was published to ClawHub."
+          exit 1
+
+  pack:
+    name: fetch the tarball npm serves
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.fetch.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+
+      - name: Download it and check it against npm's integrity hash
+        id: fetch
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tarball_url="$(npm view "$PACKAGE_NAME@$version" dist.tarball)"
+          integrity="$(npm view "$PACKAGE_NAME@$version" dist.integrity)"
+          mkdir -p npm-tarball
+          file="npm-tarball/pushary-openclaw-$version.tgz"
+          curl -fsSL -o "$file" "$tarball_url"
+          actual="sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w0)"
+          if [ "$actual" != "$integrity" ]; then
+            echo "::error::The tarball for $PACKAGE_NAME@$version does not match npm's integrity hash."
+            exit 1
+          fi
+          packed="$(tar -xzOf "$file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+          if [ "$packed" != "$version" ]; then
+            echo "::error::npm's tarball for $version holds version $packed."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: npm-tarball
+          path: npm-tarball/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish to ClawHub
+    if: github.event_name == 'workflow_dispatch'
+    needs: pack
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@a1567fb752e07d2b5951e4fd48e2e7351da89874 # v0.26.0
+    with:
+      dry_run: ${{ inputs.dry_run }}
+      owner: pushary
+      family: code-plugin
+      version: ${{ needs.pack.outputs.version }}
+      package_artifact_name: npm-tarball
+      wait_for_publication: false
+
+  confirm:
+    name: ClawHub published it
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run == false
+    needs: [pack, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    permissions: {}
+    steps:
+      - name: Wait for ClawHub's security checks
+        env:
+          VERSION: ${{ needs.pack.outputs.version }}
+        run: |
+          set -euo pipefail
+          state=""
+          for attempt in $(seq 1 120); do
+            state="$(curl -fsS "$CLAWHUB_PACKAGE_API/versions/$VERSION/publication" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("state", ""))')"
+            case "$state" in
+              published)
+                echo "ClawHub published $PACKAGE_NAME@$VERSION."
+                exit 0
+                ;;
+              blocked|failed|rejected)
+                echo "::error::ClawHub's checks ended with '$state' for $PACKAGE_NAME@$VERSION. Read them on clawhub.ai."
+                exit 1
+                ;;
+            esac
+            echo "ClawHub state for $PACKAGE_NAME@$VERSION: $state (check $attempt of 120)."
+            sleep 60
+          done
+          echo "::error::$PACKAGE_NAME@$VERSION is still '$state' on ClawHub after two hours."
+          exit 1
