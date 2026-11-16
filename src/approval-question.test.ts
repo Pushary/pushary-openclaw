@@ -132,7 +132,7 @@ describe('a file change', () => {
     })
     assert.equal(question.question, 'Allow OpenClaw to write `~/.openclaw/.env`? Read the change before you answer.')
     assert.equal(question.action, 'write ~/.openclaw/.env')
-    assert.equal(question.actionBody, 'Write ~/.openclaw/.env, 4 lines:\n\n# keys\nOPENAI_API_KEY=[value not sent]\nexport PLAIN_PASSWORD=[value not sent]\nTELEGRAM_BOT_TOKEN = [value not sent]\n')
+    assert.equal(question.actionBody, 'Write ~/.openclaw/.env, 4 lines:\n\nOPENAI_API_KEY=[value not sent]\nPLAIN_PASSWORD=[value not sent]\nTELEGRAM_BOT_TOKEN=[value not sent]')
   })
 
   it('shows an edit as the lines it removes and adds, with credentials redacted', () => {
@@ -149,7 +149,7 @@ describe('a file change', () => {
     const patch = '*** Begin Patch\n*** Update File: /home/me/.config/openclaw/gateway.env\n@@\n-PUSHARY_API_KEY=pk_old.secret\n+PUSHARY_API_KEY=my plain value\n*** End Patch'
     const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
     assert.equal(question.question, 'Allow OpenClaw to apply a patch to `/home/me/.config/openclaw/gateway.env`? Read the change before you answer.')
-    assert.match(question.actionBody, /\+PUSHARY_API_KEY=\[value not sent\]/)
+    assert.match(question.actionBody, /dotenv change contents not sent/)
     assert.doesNotMatch(outgoingTextOf(question), /pk_old|my plain value/)
   })
 
@@ -158,8 +158,70 @@ describe('a file change', () => {
     assert.match(question.question, /^Allow OpenClaw to use edit: `\{"path":"a\.txt"/)
   })
 
+  it('withholds a complete dotenv write unless every line is a plain assignment, so no part of a value is sent as a name', () => {
+    for (const content of [
+      'CONFIG="first line\nINTERNAL_VALUE=second line\nlast line"\nPUBLIC=yes',
+      'KEY="line one\nhunter2=1',
+      '1PASSWORD_IS_hunter2=1\nPUBLIC=yes',
+      'PRIVATE_KEY=-----BEGIN KEY-----\nMIIEsecretAbCd==\n-----END KEY-----',
+    ]) {
+      const question = questionOf({ toolName: 'write', params: { path: '.env', content } })
+      assert.match(question.actionBody, /dotenv change contents not sent/, content)
+      assert.doesNotMatch(outgoingTextOf(question), /first line|INTERNAL_VALUE|second line|last line|hunter2|MIIEsecret|PUBLIC/, content)
+    }
+  })
+
+  it('lists the names of a dotenv write made only of plain assignments, comments and blank lines', () => {
+    const question = questionOf({ toolName: 'write', params: { path: '.env', content: '# keys\r\n\r\nAPI_URL="https://api.example.test" # prod\r\nexport MODE=live\r\nEMPTY=\r\n' } })
+    assert.match(question.actionBody, /API_URL=\[value not sent\]\nEMPTY=\[value not sent\]\nMODE=\[value not sent\]$/)
+    assert.doesNotMatch(outgoingTextOf(question), /api\.example|live|prod/)
+  })
+
+  it('previews a patch carried in command, as the Codex harness sends it, without the dotenv contents', () => {
+    const patch = '*** Begin Patch\n*** Add File: .env\n+APP_SETTING=plainvalue\n*** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch'
+    const question = questionOf({ toolName: 'apply_patch', params: { command: patch } })
+    assert.equal(question.question, 'Allow OpenClaw to apply a patch to `.env`, `deploy.sh`? Read the change before you answer.')
+    assert.match(question.actionBody, /deploy production/)
+    assert.doesNotMatch(outgoingTextOf(question), /plainvalue/)
+  })
+
+  it('keeps the other files of a patch reviewable when its headers are indented', () => {
+    const patch = '*** Begin Patch\n  *** Update File: .env\n@@\n+APP_SETTING=plainvalue\n  *** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch'
+    const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+    assert.match(question.actionBody, /deploy production/)
+    assert.doesNotMatch(outgoingTextOf(question), /plainvalue/)
+  })
+
+  it('withholds a dotenv change it cannot read instead of sending its parameters', () => {
+    for (const event of [
+      { toolName: 'edit', params: { path: '.env', edits: [{ oldText: 'DB_PASS=oldplainvalue', newText: 'DB_PASS=newplainvalue' }, { oldText: 'x' }] } },
+      { toolName: 'write', params: { path: 'C:\\app\\.env.local', content: ['DB_PASS=newplainvalue'] } },
+    ]) {
+      const question = questionOf(event)
+      assert.match(question.question, /\.env/, event.toolName)
+      assert.match(question.actionBody, /dotenv change contents not sent/, event.toolName)
+      assert.doesNotMatch(outgoingTextOf(question), /plainvalue/, event.toolName)
+    }
+  })
+
+  it('does not send dotenv edit fragments that could be part of a value', () => {
+    const question = questionOf({
+      toolName: 'edit',
+      params: { path: '.env.local', command: 'echo harmless', edits: [{ oldText: 'old private fragment', newText: 'new private fragment' }] },
+    })
+    assert.match(question.actionBody, /1 change/)
+    assert.doesNotMatch(outgoingTextOf(question), /private fragment/)
+  })
+
+  it('omits dotenv hunks from a mixed patch and keeps other files reviewable', () => {
+    const patch = '*** Begin Patch\n*** Update File: .env\n@@\n-old private fragment\n+new private fragment\n*** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch'
+    const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+    assert.match(question.actionBody, /deploy production/)
+    assert.doesNotMatch(outgoingTextOf(question), /private fragment/)
+  })
+
   it('knows an env file by its name', () => {
-    for (const path of ['.env', '/srv/app/.env.local', '~/.config/openclaw/gateway.env', 'C:\\app\\.ENV']) assert.equal(isEnvFile(path), true, path)
+    for (const path of ['.env', '/srv/app/.env.local', '~/.config/openclaw/gateway.env', 'C:\\app\\.ENV', 'file://server/share/.env', 'C:\\app\\.env::$DATA']) assert.equal(isEnvFile(path), true, path)
     for (const path of ['env.ts', '/srv/app/environment.json', 'README.md']) assert.equal(isEnvFile(path), false, path)
   })
 })

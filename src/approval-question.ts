@@ -1,5 +1,5 @@
 import { commandPreviewOf, type CommandPreview } from './command-preview.js'
-import { fileChangePreviewOf, type FileChangePreview } from './file-change-preview.js'
+import { fileChangePreviewOf, PATCH_OPERATION, type FileChangePreview } from './file-change-preview.js'
 import type { OpenClawBeforeToolCallEvent } from './host-api.js'
 import { serializedWithCredentialsRedacted } from './parameter-redaction.js'
 import { redactSecrets, redactSecretsDeep } from './redaction.js'
@@ -56,10 +56,10 @@ const stringParameter = (params: Readonly<Record<string, unknown>>, name: string
 }
 
 const describedCall = (event: OpenClawBeforeToolCallEvent): CallDescription => {
-  const preview = commandPreviewOf(event.params, PARAMETERS_THE_CONTEXT_SHOWS)
-  if (preview !== null) return { kind: 'command', preview }
   const change = fileChangePreviewOf(hostToolId(event.toolName), event.params)
   if (change !== null) return { kind: 'file_change', change }
+  const preview = commandPreviewOf(event.params, PARAMETERS_THE_CONTEXT_SHOWS)
+  if (preview !== null) return { kind: 'command', preview }
   const visible = withHiddenCharactersShown(serializedWithCredentialsRedacted(event.params))
   return { kind: 'parameters', line: redactSecrets(visible), body: redactSecretsDeep(visible) }
 }
@@ -92,7 +92,7 @@ const quotedList = (paths: readonly string[]): string =>
 
 const fileChangeQuestion = (change: FileChangePreview): string => {
   const targets = quotedList(change.paths)
-  const asked = change.operation === 'patch' ? `apply a patch to ${targets}` : `${change.operation} ${targets}`
+  const asked = change.operation === PATCH_OPERATION ? `apply a patch to ${targets}` : `${change.operation} ${targets}`
   return `Allow ${AGENT_LABEL} to ${asked}? Read the change before you answer.`
 }
 

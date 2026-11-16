@@ -104,7 +104,7 @@ Before anything is sent, the plugin removes what it can recognise as a secret:
 
 - Key and token formats it knows: Pushary keys, `sk-` keys (OpenAI, Anthropic), Stripe, GitHub, GitLab, Slack, Google, AWS access key ids, npm, xAI and JWTs, plus private key blocks and long base64-like strings of 40 or more characters.
 - Passwords in URLs, `Bearer` and `Authorization` values, and the value of anything named like a password, token, secret, API key, access key, client secret or private key. In JSON this holds at any depth, whatever the value.
-- Every value in a `.env` file (`.env`, `.env.*` or a name ending in `.env`, such as `gateway.env`). Only the variable names are sent.
+- For a complete write to a `.env` file (`.env`, `.env.*` or a name ending in `.env`, such as `gateway.env`), Pushary receives the variable names when every line is a plain `NAME=value` assignment, a comment or blank. A file with any other line, such as a value spread over several lines, sends neither names nor values. For an edit or patch, Pushary receives the paths and omits the dotenv change contents because a fragment can start inside a value.
 
 Redaction works from these patterns. A secret in a command that matches none of them, such as a password with spaces passed to a flag of its own, is sent as written. The plugin leaves the rest of a command as it is so you can see what will run.
 
