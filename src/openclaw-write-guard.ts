@@ -7,6 +7,9 @@ import { nodeHasOtherNames, nodeMayBeSymbolicLink, nodeRealpath, spawnsOutsideTh
 import { DEFAULT_OPENCLAW_AGENT_ID } from './settings.js'
 
 const CASE_INSENSITIVE_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(['darwin', 'win32'])
+const PATH_ALIAS_ROOTS_BY_PLATFORM: Readonly<Partial<Record<NodeJS.Platform, readonly string[]>>> = {
+  darwin: ['/System/Volumes/Data', '/.vol', '/.nofollow'],
+}
 const EXTENSIONS_DIRECTORY_NAME = 'extensions'
 const PLUGIN_ROOT_DEPTH = 2
 const USER_CONFIG_DIRECTORY = '.config'
@@ -110,6 +113,7 @@ export const openClawWriteGuardFor = (api: OpenClawPluginApi): ((call: FileWrite
     mayBeSymbolicLink: nodeMayBeSymbolicLink,
     hasOtherNames: nodeHasOtherNames,
     caseInsensitive: CASE_INSENSITIVE_PLATFORMS.has(process.platform),
+    pathAliasRoots: PATH_ALIAS_ROOTS_BY_PLATFORM[process.platform] ?? [],
     workspaceFor: workspaceFrom(api),
     otherWorkingDirectories: [process.cwd()],
   }

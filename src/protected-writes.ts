@@ -44,6 +44,7 @@ export interface WriteGuardSystem {
   readonly mayBeSymbolicLink: (path: string) => boolean
   readonly hasOtherNames: (path: string) => boolean
   readonly caseInsensitive: boolean
+  readonly pathAliasRoots: readonly string[]
   readonly workspaceFor: (agentId: string | undefined) => string | null
   readonly otherWorkingDirectories: readonly string[]
 }
@@ -66,6 +67,7 @@ interface ComparablePaths {
   readonly workspaceFoldersOpenClawLoads: readonly string[]
   readonly riskyRelativeStarts: ReadonlySet<string>
   readonly locationsFoldAsTheDiskDoes: boolean
+  readonly pathAliasRoots: readonly string[]
 }
 
 const errorCodeOf = (error: unknown): string | null =>
@@ -144,6 +146,7 @@ const comparablePathsFor = (locations: OpenClawStateLocations, system: WriteGuar
     workspace: comparableWorkspace,
     workspaceSpellings: workspace === null || comparableWorkspace === null ? [] : [...new Set([comparableWorkspace, resolve(workspace)])],
     workspaceFoldersOpenClawLoads: WORKSPACE_FOLDERS_OPENCLAW_LOADS.map(folder => comparable(folder, system)),
+    pathAliasRoots: system.pathAliasRoots.map(root => comparable(root, system)),
     riskyRelativeStarts: new Set([
       ...locations.stateDirectories.map(state => comparable(basename(state), system)),
       ...locations.configFiles.map(file => comparable(basename(file), system)),
@@ -179,10 +182,15 @@ const isProtectedLocation = (path: string, paths: ComparablePaths): boolean => {
 const foldCanBeTrustedFor = (path: string, paths: ComparablePaths, system: WriteGuardSystem): boolean =>
   !system.caseInsensitive || (paths.locationsFoldAsTheDiskDoes && foldsAsTheDiskDoes(path))
 
+const isUnderAPathAlias = (location: string, paths: ComparablePaths): boolean =>
+  paths.pathAliasRoots.some(root => isSameOrInside(location, root))
+
 const verdictForAbsolute = (path: string, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
   const canonical = canonicalPathOf(path, system)
   if (canonical === null || system.hasOtherNames(canonical) || !foldCanBeTrustedFor(canonical, paths, system)) return 'uncertain'
-  return isProtectedLocation(comparable(canonical, system), paths) ? 'protected' : 'clear'
+  const location = comparable(canonical, system)
+  if (isUnderAPathAlias(location, paths)) return 'uncertain'
+  return isProtectedLocation(location, paths) ? 'protected' : 'clear'
 }
 
 const firstComponentOf = (relativePath: string): string => normalize(relativePath).split(/[\\/]/).find(part => part.length > 0) ?? ''
@@ -300,6 +308,11 @@ export const SESSIONS_SPAWN_TOOL = 'sessions_spawn'
 export const SPAWN_FOLDER_PARAMETER = 'cwd'
 const SPAWN_SOURCES_IT_CANNOT_SEE: readonly string[] = ['projectId', 'projectGitUrl', 'worktree']
 
+const snakeCaseOf = (name: string): string =>
+  name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+
+const SPAWN_SOURCE_SPELLINGS: readonly string[] = [...new Set(SPAWN_SOURCES_IT_CANNOT_SEE.flatMap(name => [name, snakeCaseOf(name)]))]
+
 const SPAWN_RUNTIME_PARAMETER = 'runtime'
 const ACP_RUNTIME = 'acp'
 
@@ -309,14 +322,18 @@ export const startsAnAcpSession = (params: Readonly<Record<string, unknown>>): b
 }
 
 const namesAFolderItCannotSee = (params: Readonly<Record<string, unknown>>): boolean =>
-  SPAWN_SOURCES_IT_CANNOT_SEE.some(name => params[name] !== undefined && params[name] !== false)
+  SPAWN_SOURCE_SPELLINGS.some(name => params[name] !== undefined && params[name] !== false)
+
+const USER_PATH_HOME_PREFIX = /^~(?=$|[\\/])/
+
+const userPathExpandedFrom = (raw: string, home: string): string => raw.replace(USER_PATH_HOME_PREFIX, () => home)
 
 const spawnFolderReadingsOf = (raw: string, system: WriteGuardSystem): readonly string[] | null => {
   const readings: string[] = []
   for (const home of [system.osHome, system.openClawHome]) {
     const decoded = absoluteOrRelative(raw, home)
     if (decoded === null) return null
-    readings.push(decoded, expandedHome(raw, home))
+    readings.push(decoded, userPathExpandedFrom(raw, home))
   }
   return [...new Set(readings)]
 }

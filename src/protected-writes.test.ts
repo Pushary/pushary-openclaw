@@ -31,7 +31,7 @@ beforeEach(() => {
       { directory: join(home, '.config', 'systemd', 'user'), namePrefix: 'openclaw' },
     ],
   }
-  system = { osHome: home, openClawHome: home, realpath: nodeRealpath, mayBeSymbolicLink: nodeMayBeSymbolicLink, hasOtherNames: nodeHasOtherNames, caseInsensitive: false, workspaceFor: () => workspace, otherWorkingDirectories: [] }
+  system = { osHome: home, openClawHome: home, realpath: nodeRealpath, mayBeSymbolicLink: nodeMayBeSymbolicLink, hasOtherNames: nodeHasOtherNames, caseInsensitive: false, pathAliasRoots: [], workspaceFor: () => workspace, otherWorkingDirectories: [] }
 })
 
 afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -372,6 +372,15 @@ describe('a session spawned into another folder', () => {
     assert.equal(spawn({ cwd: `file://${workspace}` }, { ...system, otherWorkingDirectories: [state] }), true)
   })
 
+  it('asks for a project named in snake_case, which OpenClaw also reads', () => {
+    assert.equal(spawn({ project_id: 'app' }), true)
+    assert.equal(spawn({ project_git_url: 'https://github.com/acme/app' }), true)
+  })
+
+  it('reads ~\\ in a session folder as OpenClaw does on every platform', () => {
+    assert.equal(spawn({ cwd: '~\\x' }, { ...system, otherWorkingDirectories: [workspace] }), true)
+  })
+
   it('never looks at other tools', () => {
     assert.equal(spawnsOutsideTheWorkspace(locations, system, { toolId: 'write', event: { toolName: 'write', params: { cwd: state } }, agentId: undefined }), false)
   })
@@ -438,6 +447,15 @@ describe('paths it cannot resolve with certainty ask', () => {
   it('gates a relative path that names the state directory, wherever the run started', () => {
     assert.equal(asks(write('.openclaw/hooks/x/handler.js')), true)
     assert.equal(asks(write('openclaw.json')), true)
+  })
+
+  it('gates a path under a folder that reaches other folders without realpath resolving it', () => {
+    const aliases: WriteGuardSystem = { ...system, pathAliasRoots: ['/System/Volumes/Data', '/.vol'] }
+    assert.equal(asks(write('/System/Volumes/Data/pushary-missing/.openclaw/openclaw.json'), aliases), true)
+    assert.equal(asks(write('/.vol/1/2/openclaw.json'), aliases), true)
+    assert.equal(asks(write('/system/volumes/data/pushary-missing/src/app.ts'), { ...aliases, caseInsensitive: true }), true)
+    assert.equal(asks(write(join(project, 'src', 'app.ts')), aliases), false)
+    assert.equal(asks(write('src/app.ts'), aliases), false)
   })
 
   it('gates a path whose real location it cannot read', () => {
