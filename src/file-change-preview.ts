@@ -1,7 +1,8 @@
-import { win32 } from 'node:path'
+import { posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isRecord } from './parameter-redaction.js'
-import { APPLY_PATCH_TOOL, EDIT_TOOL, patchTargetsOf, WRITE_TOOL } from './protected-writes.js'
+import { columnZeroTargetsOf, patchHunksOf, patchTextOf, type PatchHunk } from './patch-hunks.js'
+import { APPLY_PATCH_TOOL, EDIT_TOOL, isPlainPath, patchTargetsOf, withoutHostArgumentTails, WRITE_TOOL } from './protected-writes.js'
 import { redactSecrets, redactSecretsDeep } from './redaction.js'
 import { withHiddenCharactersShown } from './visible-text.js'
 
@@ -29,12 +30,14 @@ const OLD_TEXT_PARAMETER = 'oldText'
 const NEW_TEXT_PARAMETER = 'newText'
 const ENV_FILE_NAME = '.env'
 const ENV_BLANK_OR_COMMENT_LINE = /^[ \t]*(?:#.*)?$/
-const ENV_ASSIGNMENT_LINE = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*=[ \t]*(?:(?:"[^"]*"|'[^']*'|`[^`]*`)[ \t]*(?:#.*)?|[^"'`\s].*)?$/
+const ENV_ASSIGNMENT_LINE = /^[ \t]*(?:export[ \t]+)?([A-Z_][A-Z0-9_]*)[ \t]*=[ \t]*(?:(?:"[^"\\]*"|'[^'\\]*'|`[^`\\]*`)[ \t]*(?:#.*)?|[^"'`\\\s][^"'`\\]*)?$/
 const WINDOWS_STREAM_SEPARATOR = ':'
+const WINDOWS_TRAILING_DOTS_AND_SPACES = /[. ]+$/
+const FILE_URL_PREFIX = 'file://'
 const ENV_VALUE_HIDDEN = '[value not sent]'
 const ENV_EDIT_HIDDEN = '[dotenv change contents not sent]'
-const PATCH_FILE_START = /(?=^[ \t]*\*\*\* (?:Add|Delete|Update) File: )/m
-const PATCH_END = '*** End Patch'
+const ENV_FILE_NAME_HIDDEN = '[dotenv file name not sent]'
+const DOTENV_MENTION = /\.env/i
 const REMOVED_LINE_PREFIX = '- '
 const ADDED_LINE_PREFIX = '+ '
 
@@ -43,9 +46,16 @@ const textParameter = (params: Readonly<Record<string, unknown>>, name: string):
   return typeof value === 'string' ? value : undefined
 }
 
+const pathAsWrittenOf = (params: Readonly<Record<string, unknown>>): string | undefined => textParameter(params, PATH_PARAMETER)
+
 const pathParameter = (params: Readonly<Record<string, unknown>>): string | undefined => {
   const path = textParameter(params, PATH_PARAMETER)?.trim()
   return path ? path : undefined
+}
+
+const mayWriteEnvFile = (params: Readonly<Record<string, unknown>>): boolean => {
+  const path = pathAsWrittenOf(params)
+  return path !== undefined && mayBeEnvFile(path)
 }
 
 const fileUrlPathOf = (url: string): string => {
@@ -56,15 +66,29 @@ const fileUrlPathOf = (url: string): string => {
   }
 }
 
-const isEnvFileName = (name: string): boolean => name.endsWith(ENV_FILE_NAME) || name.startsWith(`${ENV_FILE_NAME}.`)
+const isEnvFileName = (name: string): boolean => {
+  const windowsName = name.replace(WINDOWS_TRAILING_DOTS_AND_SPACES, '')
+  return windowsName.endsWith(ENV_FILE_NAME) || windowsName.startsWith(`${ENV_FILE_NAME}.`)
+}
 
-export const isEnvFile = (path: string): boolean => {
-  const referenced = path.trim().replace(/^@/, '')
-  const resolved = referenced.startsWith('file://') ? fileUrlPathOf(referenced) : referenced
-  const name = win32.basename(resolved).toLowerCase()
+const isEnvFileOrStreamName = (name: string): boolean => {
   const [nameBeforeStream = name] = name.split(WINDOWS_STREAM_SEPARATOR)
   return isEnvFileName(name) || isEnvFileName(nameBeforeStream)
 }
+
+const resolvedFileNamesOf = (path: string): readonly string[] =>
+  [win32.basename(win32.normalize(path)), posix.basename(posix.normalize(path))].map(name => name.toLowerCase())
+
+const isFileUrl = (path: string): boolean => path.slice(0, FILE_URL_PREFIX.length).toLowerCase() === FILE_URL_PREFIX
+
+const spellingsOf = (path: string): readonly string[] => {
+  const referenced = withoutHostArgumentTails(path.trim().replace(/^@/, ''))
+  return isFileUrl(referenced) ? [referenced, fileUrlPathOf(referenced)] : [referenced]
+}
+
+export const isEnvFile = (path: string): boolean => spellingsOf(path).flatMap(resolvedFileNamesOf).some(isEnvFileOrStreamName)
+
+const mayBeEnvFile = (path: string): boolean => !isPlainPath(path) || isEnvFile(path)
 
 const sendableText = (text: string): string => redactSecretsDeep(withHiddenCharactersShown(text))
 
@@ -81,15 +105,46 @@ const envNamesOnly = (content: string): string => {
   return [...new Set(names)].sort().map(name => `${name}=${ENV_VALUE_HIDDEN}`).join('\n')
 }
 
-const isPatchPathHeader = (line: string): boolean => patchTargetsOf(line).length > 0
+interface ShownPatch {
+  readonly paths: readonly string[]
+  readonly body: string
+}
 
-const withoutEnvPatchContents = (patch: string): string =>
-  patch.split(PATCH_FILE_START).map(section => {
-    if (!patchTargetsOf(section).some(isEnvFile)) return section
-    const headers = section.split(/\r?\n/).filter(isPatchPathHeader)
-    const end = section.trimEnd().endsWith(PATCH_END) ? [PATCH_END] : []
-    return [...headers, ENV_EDIT_HIDDEN, ...end, ''].join('\n')
-  }).join('')
+const mentionsEnvFile = (text: string): boolean => patchTargetsOf(text).some(mayBeEnvFile)
+
+const mentionsDotenv = (text: string): boolean => DOTENV_MENTION.test(text) || mentionsEnvFile(text)
+
+const isEnvHunk = (hunk: PatchHunk): boolean => hunk.targets.some(mayBeEnvFile) || hunk.body.some(mentionsEnvFile)
+
+const movesAnEnvFile = (hunk: PatchHunk): boolean => hunk.targets.length > 1 && hunk.targets.some(mayBeEnvFile)
+
+const withheldHunkLinesOf = (hunk: PatchHunk): readonly string[] =>
+  hunk.body.length === 0 ? hunk.headers : [...hunk.headers, ENV_EDIT_HIDDEN]
+
+const shownHunkLinesOf = (hunk: PatchHunk): readonly string[] =>
+  isEnvHunk(hunk) ? withheldHunkLinesOf(hunk) : [...hunk.headers, ...hunk.body]
+
+const shownPatchBodyOf = (patch: string, hunks: readonly PatchHunk[]): string => {
+  if (hunks.some(movesAnEnvFile)) return patchTextOf(hunks.flatMap(withheldHunkLinesOf))
+  return hunks.some(isEnvHunk) ? patchTextOf(hunks.flatMap(shownHunkLinesOf)) : patch
+}
+
+const uniqueTargets = (targets: readonly string[]): readonly string[] => [...new Set(targets)]
+
+const namedOrHidden = (targets: readonly string[]): readonly string[] =>
+  targets.length === 0 ? [ENV_FILE_NAME_HIDDEN] : uniqueTargets(targets)
+
+const unparsedPatchOf = (patch: string): ShownPatch =>
+  mentionsDotenv(patch)
+    ? { paths: namedOrHidden(columnZeroTargetsOf(patch)), body: ENV_EDIT_HIDDEN }
+    : { paths: uniqueTargets(patchTargetsOf(patch)), body: patch }
+
+const shownPatchOf = (patch: string): ShownPatch => {
+  const hunks = patchHunksOf(patch)
+  if (hunks === null) return unparsedPatchOf(patch)
+  const paths = uniqueTargets(hunks.flatMap(hunk => hunk.targets))
+  return { paths, body: shownPatchBodyOf(patch, hunks) }
+}
 
 const sendablePath = (path: string): string => redactSecrets(withHiddenCharactersShown(path))
 
@@ -131,7 +186,7 @@ const writePreviewOf = (params: Readonly<Record<string, unknown>>): FileChangePr
   return {
     operation: WRITE_OPERATION,
     paths: [shownPath],
-    body: `Write ${shownPath}, ${plural(lineCountOf(content), 'line')}:\n\n${sendableText(isEnvFile(path) ? envNamesOnly(content) : content)}`,
+    body: `Write ${shownPath}, ${plural(lineCountOf(content), 'line')}:\n\n${sendableText(mayWriteEnvFile(params) ? envNamesOnly(content) : content)}`,
   }
 }
 
@@ -143,7 +198,7 @@ const editPreviewOf = (params: Readonly<Record<string, unknown>>): FileChangePre
   const edits = textEditsOf(params)
   if (path === undefined || edits === null) return null
   const shownPath = sendablePath(path)
-  const changes = isEnvFile(path) ? ENV_EDIT_HIDDEN : edits.map(shownEdit).join('\n\n')
+  const changes = mayWriteEnvFile(params) ? ENV_EDIT_HIDDEN : edits.map(shownEdit).join('\n\n')
   return {
     operation: EDIT_OPERATION,
     paths: [shownPath],
@@ -156,12 +211,8 @@ const hasPatchTargets = (text: string | undefined): text is string => text !== u
 const patchPreviewOf = (params: Readonly<Record<string, unknown>>): FileChangePreview | null => {
   const patch = PATCH_PARAMETERS.map(name => textParameter(params, name)).find(hasPatchTargets)
   if (patch === undefined) return null
-  const targets = patchTargetsOf(patch)
-  return {
-    operation: PATCH_OPERATION,
-    paths: targets.map(sendablePath),
-    body: sendableText(targets.some(isEnvFile) ? withoutEnvPatchContents(patch) : patch),
-  }
+  const shown = shownPatchOf(patch)
+  return { operation: PATCH_OPERATION, paths: shown.paths.map(sendablePath), body: sendableText(shown.body) }
 }
 
 const readablePreviewOf = (toolId: string, params: Readonly<Record<string, unknown>>): FileChangePreview | null => {
@@ -171,15 +222,33 @@ const readablePreviewOf = (toolId: string, params: Readonly<Record<string, unkno
   return null
 }
 
-const PATH_CHANGE_OPERATIONS: ReadonlyMap<string, FileChangeOperation> = new Map<string, FileChangeOperation>([
+const FILE_CHANGE_OPERATIONS: ReadonlyMap<string, FileChangeOperation> = new Map<string, FileChangeOperation>([
   [WRITE_TOOL, WRITE_OPERATION],
   [EDIT_TOOL, EDIT_OPERATION],
+  [APPLY_PATCH_TOOL, PATCH_OPERATION],
 ])
 
-const withheldEnvChangeOf = (toolId: string, params: Readonly<Record<string, unknown>>): FileChangePreview | null => {
-  const operation = PATH_CHANGE_OPERATIONS.get(toolId)
+const stringsIn = (value: unknown): readonly string[] => {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flatMap(stringsIn)
+  return isRecord(value) ? Object.entries(value).flatMap(([key, entry]) => [key, ...stringsIn(entry)]) : []
+}
+
+const declaredTargetsOf = (toolId: string, params: Readonly<Record<string, unknown>>): readonly string[] => {
+  if (toolId === APPLY_PATCH_TOOL) return stringsIn(params).flatMap(columnZeroTargetsOf)
   const path = pathParameter(params)
-  return operation === undefined || path === undefined || !isEnvFile(path) ? null : { operation, paths: [sendablePath(path)], body: ENV_EDIT_HIDDEN }
+  return path === undefined ? [] : [path]
+}
+
+const declaresEnvChange = (toolId: string, params: Readonly<Record<string, unknown>>): boolean => {
+  const path = toolId === APPLY_PATCH_TOOL ? undefined : pathParameter(params)
+  return path === undefined ? stringsIn(params).some(mentionsDotenv) : mayWriteEnvFile(params)
+}
+
+const withheldEnvChangeOf = (toolId: string, params: Readonly<Record<string, unknown>>): FileChangePreview | null => {
+  const operation = FILE_CHANGE_OPERATIONS.get(toolId)
+  if (operation === undefined || !declaresEnvChange(toolId, params)) return null
+  return { operation, paths: namedOrHidden(declaredTargetsOf(toolId, params)).map(sendablePath), body: ENV_EDIT_HIDDEN }
 }
 
 export const fileChangePreviewOf = (toolId: string, params: Readonly<Record<string, unknown>>): FileChangePreview | null =>

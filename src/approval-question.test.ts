@@ -164,10 +164,14 @@ describe('a file change', () => {
       'KEY="line one\nhunter2=1',
       '1PASSWORD_IS_hunter2=1\nPUBLIC=yes',
       'PRIVATE_KEY=-----BEGIN KEY-----\nMIIEsecretAbCd==\n-----END KEY-----',
+      'MOTD="hello \\"\nhunter2tail=x"',
+      "MOTD='hello \\'\nhunter2tail=x'",
+      'KEY=abc"def\nhunter2tail=x"',
+      'K=abc\nx7Yp3kq9hunter2Tail==',
     ]) {
       const question = questionOf({ toolName: 'write', params: { path: '.env', content } })
       assert.match(question.actionBody, /dotenv change contents not sent/, content)
-      assert.doesNotMatch(outgoingTextOf(question), /first line|INTERNAL_VALUE|second line|last line|hunter2|MIIEsecret|PUBLIC/, content)
+      assert.doesNotMatch(outgoingTextOf(question), /first line|INTERNAL_VALUE|second line|last line|hunter2|MIIEsecret|PUBLIC|MOTD/, content)
     }
   })
 
@@ -185,11 +189,157 @@ describe('a file change', () => {
     assert.doesNotMatch(outgoingTextOf(question), /plainvalue/)
   })
 
-  it('keeps the other files of a patch reviewable when its headers are indented', () => {
-    const patch = '*** Begin Patch\n  *** Update File: .env\n@@\n+APP_SETTING=plainvalue\n  *** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch'
+  it('keeps an indented header inside a dotenv hunk with the dotenv file, as the patch parser does', () => {
+    for (const patch of [
+      '*** Begin Patch\n*** Update File: .env\n@@\n *** Update File: notes.md\n+STRIPE=hunter2value\n*** End Patch',
+      '*** Begin Patch\n*** Add File: .env\n+A=1\r*** Update File: notes.md\n+B=hunter2value\n*** End Patch',
+      '*** Begin Patch\n*** Add File: .env\n+A=1\u2028*** Update File: notes.md\n+B=hunter2value\n*** End Patch',
+      '*** Begin Patch\n*** Update File: .env\n@@\n *** Add File: hunter2value\n*** End Patch',
+    ]) {
+      const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+      assert.match(question.actionBody, /dotenv change contents not sent/, JSON.stringify(patch))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(patch))
+    }
+  })
+
+  it('names only the lines OpenClaw reads as file headers, so a dotenv line is never sent as a file name', () => {
+    for (const line of [' *** Add File: hunter2value.env', ' *** Add File: hunter2value/.env', ' *** Delete File: .env.hunter2value', ' *** Update File: .env:hunter2value']) {
+      const patch = `*** Begin Patch\n*** Update File: .env\n@@\n${line}\n*** End Patch`
+      for (const params of [{ input: patch }, { command: patch.split('\n') }]) {
+        const question = questionOf({ toolName: 'apply_patch', params })
+        assert.match(question.question, /`\.env`/, JSON.stringify(params))
+        assert.match(question.actionBody, /dotenv change contents not sent/, JSON.stringify(params))
+        assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(params))
+      }
+    }
+  })
+
+  it('names a file whose header is indented after an added run or a deletion, because OpenClaw writes it', () => {
+    for (const [patch, file] of [
+      ['*** Begin Patch\n*** Add File: .env\n+A=hunter2value\n *** Update File: src/auth.ts\n@@\n-check()\n+bypass()\n*** End Patch', 'src/auth.ts'],
+      ['*** Begin Patch\n*** Delete File: .env\n\t*** Add File: src/backdoor.ts\n+open the door\n*** End Patch', 'src/backdoor.ts'],
+    ] as const) {
+      const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+      assert.equal(question.question, `Allow OpenClaw to apply a patch to \`.env\`, \`${file}\`? Read the change before you answer.`)
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/)
+      assert.match(question.actionBody, /bypass\(\)|open the door/)
+    }
+  })
+
+  it('withholds a dotenv patch that OpenClaw would not parse, and names only its column-0 headers', () => {
+    for (const [patch, named] of [
+      ['*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\n+B=hunter2value', '`.env`'],
+      ['*** Begin Patch\n*** Add File: .env\n+A=1\nB=hunter2value\n *** Add File: hunter2value.env\n*** End Patch', '`.env`'],
+      ['notes\n *** Add File: hunter2value.env\n+A=hunter2value', '`[dotenv file name not sent]`'],
+      ['*** Begin Patch\n*** Update File: .env\n*** Update File: deploy.sh\n@@\n+deploy hunter2value\n*** End Patch', '`.env`, `deploy.sh`'],
+      ['*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** Add File:.env\n+STRIPE_KEY=hunter2value\n*** End Patch', '`src/a.ts`'],
+      ['*** Begin Patch\n*** Update File: src/a.ts\n+KEY=1\n\t*** Add File:.env\n+STRIPE_KEY=hunter2value\n*** End Patch', '`src/a.ts`'],
+    ] as const) {
+      const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+      assert.equal(question.question, `Allow OpenClaw to apply a patch to ${named}? Read the change before you answer.`, JSON.stringify(patch))
+      assert.equal(question.actionBody, '[dotenv change contents not sent]', JSON.stringify(patch))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(patch))
+    }
+  })
+
+  it('withholds a malformed file change that mentions .env instead of sending its parameters', () => {
+    for (const event of [
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Add File:.env\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Create File: .env\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n***Add File: .ENV\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\\n*** Add File: .env\\n+STRIPE_KEY=hunter2value\\n*** End Patch' } },
+      { toolName: 'write', params: { file_path: '.env', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'edit', params: { file_path: 'config/.env.local', edits: [{ oldText: 'A=1', newText: 'A=hunter2value' }] } },
+      { toolName: 'write', params: { files: { '.env': 'STRIPE_KEY=hunter2value' } } },
+      { toolName: 'apply_patch', params: { input: { '*** Begin Patch\n*** Add File: .env\n+STRIPE_KEY=hunter2value\n*** End Patch': true } } },
+      { toolName: 'apply_patch', params: { input: ['*** Begin Patch\n*** Add File: notes.txt\n+copied from .env: STRIPE_KEY=hunter2value\n*** End Patch'] } },
+    ]) {
+      const question = questionOf(event)
+      assert.match(question.actionBody, /dotenv change contents not sent/, JSON.stringify(event))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(event))
+    }
+  })
+
+  it('withholds every hunk of a patch that moves a file into or out of a dotenv file, because the lines travel with the move', () => {
+    for (const patch of [
+      '*** Begin Patch\n*** Add File: staging.txt\n+STRIPE_KEY=hunter2value\n+REGION=eu\n*** Update File: staging.txt\n*** Move to: .env\n@@\n STRIPE_KEY=hunter2value\n-REGION=eu\n+REGION=us\n*** End Patch',
+      '*** Begin Patch\n*** Update File: notes.txt\n@@\n+STRIPE_KEY=hunter2value\n*** Update File: notes.txt\n*** Move to: .env\n@@\n STRIPE_KEY=hunter2value\n*** End Patch',
+      '*** Begin Patch\n*** Update File: .env\n*** Move to: backup.txt\n@@\n A=1\n*** Update File: backup.txt\n@@\n-STRIPE_KEY=hunter2value\n*** End Patch',
+    ]) {
+      const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
+      assert.match(question.question, /`\.env`/, JSON.stringify(patch))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(patch))
+    }
+  })
+
+  it('withholds the contents for a path that is not plain, such as one with a URL scheme, a colon or a percent sign', () => {
+    for (const path of ['file:///w/notes.txt?.env', 'notes:stream.txt', 'a%20b.txt', 'notes#1.md', ' src/app.ts', 'src/app.ts ', '\tsrc/app.ts']) {
+      const question = questionOf({ toolName: 'write', params: { path, content: 'release notes line' } })
+      assert.doesNotMatch(outgoingTextOf(question), /release notes line/, JSON.stringify(path))
+      const edited = questionOf({ toolName: 'edit', params: { path, edits: [{ oldText: 'a', newText: 'release notes line' }] } })
+      assert.doesNotMatch(outgoingTextOf(edited), /release notes line/, JSON.stringify(path))
+    }
+    for (const path of ['src/app.ts', 'C:\\repo\\src\\app.ts', '~/notes (draft).md', 'docs/café.md']) {
+      const question = questionOf({ toolName: 'write', params: { path, content: 'release notes line' } })
+      assert.match(question.actionBody, /release notes line/, path)
+    }
+  })
+
+  it('names the move target of a dotenv patch it cannot read', () => {
+    const patch = '*** Begin Patch\n*** Update File:notes.txt\n*** Move to: .env\n@@\n-a\n+STRIPE_KEY=hunter2value\n*** End Patch'
+    for (const params of [{ input: patch }, { command: ['apply_patch', patch] }]) {
+      const question = questionOf({ toolName: 'apply_patch', params })
+      assert.equal(question.question, 'Allow OpenClaw to apply a patch to `.env`? Read the change before you answer.', JSON.stringify(params))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(params))
+    }
+  })
+
+  it('names only the files OpenClaw writes in a patch without a dotenv file, and shows it in full', () => {
+    const patch = '*** Begin Patch\n*** Update File: notes.md\n@@\n *** Add File: other.txt\n+x\n*** End Patch'
     const question = questionOf({ toolName: 'apply_patch', params: { input: patch } })
-    assert.match(question.actionBody, /deploy production/)
-    assert.doesNotMatch(outgoingTextOf(question), /plainvalue/)
+    assert.equal(question.question, 'Allow OpenClaw to apply a patch to `notes.md`? Read the change before you answer.')
+    assert.equal(question.actionBody, patch)
+  })
+
+  it('withholds a dotenv patch it cannot read instead of sending its parameters', () => {
+    for (const params of [
+      { command: ['apply_patch', '*** Begin Patch\n*** Add File: .env\n+A=hunter2value\n*** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch'] },
+      { input: { patch: '*** Begin Patch\n*** Update File: config/.env.local\n+A=hunter2value\n*** Update File: deploy.sh\n@@\n+deploy production\n*** End Patch' } },
+    ]) {
+      const question = questionOf({ toolName: 'apply_patch', params })
+      assert.match(question.question, /\.env/, JSON.stringify(params))
+      assert.match(question.question, /deploy\.sh/, JSON.stringify(params))
+      assert.match(question.actionBody, /dotenv change contents not sent/, JSON.stringify(params))
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, JSON.stringify(params))
+    }
+  })
+
+  it('knows a dotenv path that OpenClaw normalises after the plugin has seen it', () => {
+    for (const event of [
+      { toolName: 'write', params: { path: '.env</arg_value>>', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'edit', params: { path: '~/.openclaw/.env</arg_value>>>', edits: [{ oldText: 'STRIPE_KEY=old', newText: 'STRIPE_KEY=hunter2value' }] } },
+      { toolName: 'write', params: { path: '.env</arg_value>></arg_value>></arg_value>>', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: '.env\t</arg_value>>', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: '.env</arg_value>> </arg_value>>', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: '.env/a\\b/..', content: 'GREETING=hunter2value' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Add File: .env/a\\b/..\n+GREETING=hunter2value\n*** End Patch' } },
+      { toolName: 'write', params: { path: 'file:///tmp/x?/.env', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: ' file:///tmp/x?/.env', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Add File: file:///tmp/x?/.env\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Update File: file:///r?/.env\n@@\n-STRIPE_KEY=old\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Update File: notes.txt\n*** Move to: file:///r#/.env\n@@\n-a\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'apply_patch', params: { input: '*** Begin Patch\n*** Add File: file:///.env.local\\notes\n+STRIPE_KEY=hunter2value\n*** End Patch' } },
+      { toolName: 'write', params: { path: 'FILE:///ws/.env?', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: 'FILE:///ws/x%2Eenv', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'edit', params: { path: 'File:///ws/.env#x', edits: [{ oldText: 'STRIPE_KEY=old', newText: 'STRIPE_KEY=hunter2value' }] } },
+      { toolName: 'write', params: { path: '.env</arg_value>>/', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'edit', params: { path: '.env</arg_value>>/.', edits: [{ oldText: 'STRIPE_KEY=old', newText: 'STRIPE_KEY=hunter2value' }] } },
+      { toolName: 'write', params: { path: 'config/.env</arg_value>>/x/..', content: 'STRIPE_KEY=hunter2value' } },
+      { toolName: 'write', params: { path: 'file:///ws/.env%3C/arg_value%3E%3E', content: 'STRIPE_KEY=hunter2value' } },
+    ]) {
+      const question = questionOf(event)
+      assert.doesNotMatch(outgoingTextOf(question), /hunter2value/, event.toolName)
+    }
   })
 
   it('withholds a dotenv change it cannot read instead of sending its parameters', () => {
@@ -221,8 +371,8 @@ describe('a file change', () => {
   })
 
   it('knows an env file by its name', () => {
-    for (const path of ['.env', '/srv/app/.env.local', '~/.config/openclaw/gateway.env', 'C:\\app\\.ENV', 'file://server/share/.env', 'C:\\app\\.env::$DATA']) assert.equal(isEnvFile(path), true, path)
-    for (const path of ['env.ts', '/srv/app/environment.json', 'README.md']) assert.equal(isEnvFile(path), false, path)
+    for (const path of ['.env', '/srv/app/.env.local', '~/.config/openclaw/gateway.env', 'C:\\app\\.ENV', 'file://server/share/.env', 'C:\\app\\.env::$DATA', 'C:\\app\\.env .', 'C:\\app\\.env.local. ', '.env/.', 'config/.env/x/..', '.env/a\\b/..', 'config/.env/x\\y/..', 'file:///tmp/x?/.env', 'file:///r#/.env', ' file:///tmp/x?/.env']) assert.equal(isEnvFile(path), true, path)
+    for (const path of ['env.ts', '/srv/app/environment.json', 'README.md', '.env/..']) assert.equal(isEnvFile(path), false, path)
   })
 })
 

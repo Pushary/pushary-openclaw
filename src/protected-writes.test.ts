@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import type { OpenClawBeforeToolCallEvent } from './host-api.js'
-import { nodeRealpath, patchTargetsOf, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type OpenClawStateLocations, type WriteGuardSystem } from './protected-writes.js'
+import { nodeMayBeSymbolicLink, nodeRealpath, patchTargetsOf, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type OpenClawStateLocations, type WriteGuardSystem } from './protected-writes.js'
 
 let root = ''
 let home = ''
@@ -31,7 +31,7 @@ beforeEach(() => {
       { directory: join(home, '.config', 'systemd', 'user'), namePrefix: 'openclaw' },
     ],
   }
-  system = { osHome: home, realpath: nodeRealpath, caseInsensitive: false, workspaceFor: () => workspace, otherWorkingDirectories: [] }
+  system = { osHome: home, realpath: nodeRealpath, mayBeSymbolicLink: nodeMayBeSymbolicLink, caseInsensitive: false, workspaceFor: () => workspace, otherWorkingDirectories: [] }
 })
 
 afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -77,6 +77,37 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
     assert.equal(asks(write(join('hooks', 'x', 'handler.js'))), true)
   })
 
+  it('asks for any path that is not plain, which OpenClaw resolves differently in each setup', () => {
+    for (const path of [
+      `file://${join(project, 'src', 'a.ts')}`,
+      ' /../hooks/x.js', '\t/../hooks/x.js', '\v/../hooks/x.js', '\u00a0/../hooks/x.js', '\u2028//../hooks/x.js', '\ufeff/./../hooks/x.js', ' ~/../hooks/x.js', ' /../../openclaw.json',
+      'hooks/.. ', '.openclaw/.. ',
+      '.env<//arg_value>>', '.env</./arg_value>>', '.env</x/../arg_value>>', '@.env<//arg_value>>',
+      'file:///../hooks/x%5C.js', 'file:///../.openclaw/extensions/p/index%5C.js',
+      'notes:stream.txt', 'a%20b.txt',
+    ]) {
+      assert.equal(asks(write(path)), true, JSON.stringify(path))
+      assert.equal(asks(edit(path)), true, JSON.stringify(path))
+    }
+    for (const path of ['src/app.ts', 'C:\\repo\\src\\app.ts', '~/notes (draft).md', 'docs/café.md', '@scope/pkg/index.ts', 'src/../lib/a.ts']) {
+      assert.equal(asks(write(path)), false, JSON.stringify(path))
+    }
+  })
+
+  it('gates a file URL that OpenClaw reads as a relative path and that climbs into protected places', () => {
+    for (const path of ['FILE:///../hooks/x.js', 'File:///a/../../hooks/x.js', 'FILE://localhost/../../hooks/x.js', ' file:///../hooks/x.js', '\tfile:///../hooks/x.js', 'FILE:///../../openclaw.json', 'FILE:///../hooks/x.js</arg_value>>/</arg_value>>']) {
+      assert.equal(asks(write(path)), true, JSON.stringify(path))
+      assert.equal(asks(edit(path)), true, JSON.stringify(path))
+    }
+  })
+
+  it('gates a file URL into OpenClaw state whatever the case of its scheme, as OpenClaw decodes it', () => {
+    for (const scheme of ['file://', 'FILE://', 'File://']) {
+      assert.equal(asks(write(`${scheme}${join(workspace, 'hooks', 'x', 'handler.js')}`)), true, scheme)
+      assert.equal(asks(edit(`${scheme}${join(state, 'openclaw.json')}`)), true, scheme)
+    }
+  })
+
   it('gates the workspace .openclaw folder, where OpenClaw finds workspace plugins before the installed ones, in every spelling', () => {
     const pluginFile = join('.openclaw', 'extensions', 'pushary', 'index.js')
     assert.equal(asks(write(join(workspace, pluginFile))), true)
@@ -111,8 +142,110 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
     assert.equal(asks(write(join(project, 'claw', 'hooks', 'x', 'handler.js'))), true)
   })
 
+  it('asks for a write through a symbolic link whose target does not exist yet, which the write would create', () => {
+    mkdirSync(join(workspace, 'docs'))
+    symlinkSync(join('..', 'hooks', 'evil.js'), join(workspace, 'docs', 'notes.md'))
+    symlinkSync(join('..', '..', 'not-yet'), join(workspace, 'later'))
+    const link = join(workspace, 'docs', 'notes.md')
+    for (const path of ['docs/notes.md', link, '~/.openclaw/workspace/docs/notes.md', 'later/openclaw.json', `${link}/`, `${link}//`, `@${link}/`, '~/.openclaw/workspace/docs/notes.md/', 'docs/notes.md/']) {
+      assert.equal(asks(write(path)), true, path)
+    }
+    assert.equal(asks(patch(['*** Begin Patch', `*** Add File: ${link}/`, '+x', '*** End Patch'].join('\n'))), true)
+    assert.equal(asks(patch(['*** Begin Patch', '*** Update File: src.md', `*** Move to: ${link}/`, '*** End Patch'].join('\n'))), true)
+    assert.equal(asks(patch(['*** Begin Patch', '*** Delete File: x.md', '*** End Patch'].join('\n'), [`${link}/`])), true)
+    assert.equal(asks(write('docs/new.md')), false)
+    assert.equal(asks(write(`${join(workspace, 'docs')}/`)), false)
+    assert.equal(asks(write(join(workspace, 'fresh', 'deeper', 'new.md'))), false)
+  })
+
+  it('asks when it cannot tell whether a missing part of the path is a symbolic link', () => {
+    assert.equal(asks(write('docs/new.md'), { ...system, mayBeSymbolicLink: () => true }), true)
+  })
+
   it('gates a differently cased spelling on a case-insensitive disk', () => {
     assert.equal(asks(write(join(state, 'OpenClaw.JSON')), { ...system, caseInsensitive: true }), true)
+  })
+
+  it('gates a spelling a case-insensitive disk folds to a protected name, such as a long s or a ligature', () => {
+    const caseInsensitive = { ...system, caseInsensitive: true }
+    for (const path of ['hook\u017f/x.js', 'HOOK\u017f/x.js', join(state, 'openclaw.j\u017fon'), '~/Library/LaunchAgents/ai.openclaw.gateway.pli\ufb06', '.openclaw/extensions/p/index.js'.replace('extensions', 'exten\u017fions')]) {
+      assert.equal(asks(write(path), caseInsensitive), true, JSON.stringify(path))
+      assert.equal(asks(edit(path), caseInsensitive), true, JSON.stringify(path))
+    }
+    assert.equal(asks(write('src/\u017fample.ts'), caseInsensitive), false)
+    assert.equal(asks(write('hoo\u212as/x.js'), caseInsensitive), true)
+  })
+
+  it('folds only what a case-insensitive disk folds, so a look-alike dot or letter does not hide a protected place', () => {
+    const caseInsensitive = { ...system, caseInsensitive: true }
+    for (const path of [
+      'hooks/\u2025/x.txt', './hooks/\u2025/x.txt', 'hooks/\uff0e\uff0e/x.txt', join(workspace, 'hooks', '\u2025', 'x.txt'), '~/.openclaw/workspace/hooks/\u2025/x.txt', join(workspace, '.openclaw', '\u2025', 'x.txt'),
+      '../\uff57orkspace/notes.md', '~/.openclaw/\uff57orkspace/notes.md', join(state, '\uff57orkspace', 'notes.md'), '~/.openclaw/workspace\uff0fx', '~/.openclaw/\u02b7orkspace/notes.md', '~/.openclaw/workspac\u2091/notes.md',
+    ]) {
+      assert.equal(asks(write(path), caseInsensitive), true, JSON.stringify(path))
+      assert.equal(asks(edit(path), caseInsensitive), true, JSON.stringify(path))
+    }
+    assert.equal(spawn({ cwd: '~/.openclaw/\uff57orkspace' }, caseInsensitive), true)
+    for (const path of ['../WORK\u017fPACE/notes.md', '~/.openclaw/WORKSPACE/notes.md', 'docs/stra\u00dfe.md', 'docs/caf\u00e9.md', 'docs/cafe\u0301.md']) {
+      assert.equal(asks(write(path), caseInsensitive), false, JSON.stringify(path))
+    }
+  })
+
+  it('folds letters onto the non-ASCII letters a case-insensitive disk folds them onto, so a respelled folder name still reaches the protected place, judged by the path as Node resolves it', () => {
+    const cyrillic = join(home, 'Проекты')
+    assert.equal(asks(write('~/Прᲂекты/hooks/x.js'), { ...system, caseInsensitive: true, workspaceFor: () => cyrillic }), true)
+    const micro = join(home, 'lab-μ')
+    assert.equal(asks(write('~/lab-µ/hooks/x.js'), { ...system, caseInsensitive: true, workspaceFor: () => micro }), true)
+    const greekState = join(home, 'Ρυθμίσεις')
+    const greekLocations = { ...locations, stateDirectories: [greekState], configFiles: [join(greekState, 'openclaw.json')] }
+    const spelledWithSigma = '~/Ρυθμίσεισ/openclaw.json'
+    assert.equal(asks(write(spelledWithSigma), { ...system, caseInsensitive: true }, greekLocations), true)
+    assert.equal(asks(edit(spelledWithSigma), { ...system, caseInsensitive: true }, greekLocations), true)
+  })
+
+  it('folds a subscript iota where it stands, as a case-insensitive disk does, whatever marks sit around it', () => {
+    const taiwan = join(state, 'Ταϊβάν')
+    assert.equal(asks(write('~/.openclaw/Τᾳ̈βάν/notes.md'), { ...system, caseInsensitive: true, workspaceFor: () => taiwan }), true)
+    const songState = join(home, 'ᾷσμα')
+    const songLocations = { ...locations, stateDirectories: [songState], configFiles: [join(songState, 'openclaw.json')] }
+    for (const event of [write('~/ᾼ͂σμα/openclaw.json'), edit('~/ᾼ͂σμα/openclaw.json')]) {
+      assert.equal(asks(event, { ...system, caseInsensitive: true }, songLocations), true)
+    }
+    const song = join(home, 'ᾷσμα')
+    assert.equal(asks(write('~/ᾼ͂σμα/hooks/x.js'), { ...system, caseInsensitive: true, workspaceFor: () => song }), true)
+  })
+
+  it('asks when a name has a character the runtime cannot fold the way a case-insensitive disk does', () => {
+    const caseInsensitive = { ...system, caseInsensitive: true }
+    const iotas = join(state, `ws-${'ι'.repeat(9)}`)
+    assert.equal(asks(write(`~/.openclaw/ws-${'ͅ'.repeat(9)}/notes.md`), { ...caseInsensitive, workspaceFor: () => iotas }), true)
+    assert.equal(spawn({ cwd: `~/.openclaw/ws-${'ͅ'.repeat(9)}` }, { ...caseInsensitive, workspaceFor: () => iotas }), true)
+    const subscripts = join(state, `ws-${'ͅ'.repeat(9)}`)
+    assert.equal(asks(write(`~/.openclaw/ws-${'ι'.repeat(9)}/notes.md`), { ...caseInsensitive, workspaceFor: () => subscripts }), true)
+    const thorn = join(home, 'proj-꟒')
+    assert.equal(asks(write('~/proj-ꟓ/hooks/x.js'), { ...caseInsensitive, workspaceFor: () => thorn }), true)
+    assert.equal(asks(write('~/proj-͸/notes.md'), caseInsensitive), true)
+    const replacement = join(home, 'proj-�')
+    assert.equal(asks(write('~/proj-\ud800/hooks/x.js'), { ...caseInsensitive, workspaceFor: () => replacement }), true)
+    const ode = join(state, 'ᾠδῇ')
+    assert.equal(asks(write('~/.openclaw/ᾨΔῌ͂/notes.md'), { ...caseInsensitive, workspaceFor: () => ode }), false)
+    assert.equal(asks(write(`~/.openclaw/ws-${'ͅ'.repeat(9)}/notes.md`), { ...system, workspaceFor: () => iotas }), true)
+    assert.equal(asks(write('src/ᾳ.ts')), false)
+  })
+
+  it('lets a differently cased spelling of a non-ASCII workspace through, final sigma included', () => {
+    const greek = join(state, 'Φάκελος')
+    const caseInsensitive = { ...system, caseInsensitive: true, workspaceFor: () => greek }
+    assert.equal(asks(write('~/.openclaw/ΦΆΚΕΛΟΣ/notes.md'), caseInsensitive), false)
+    assert.equal(spawn({ cwd: '~/.openclaw/ΦΆΚΕΛΟΣ' }, caseInsensitive), false)
+  })
+
+  it('keeps a dotless i apart from i, as a case-insensitive disk does', () => {
+    const writer = join(state, 'workspace-writer')
+    mkdirSync(writer)
+    const caseInsensitive = { ...system, caseInsensitive: true, workspaceFor: () => writer }
+    assert.equal(asks(write('../workspace-wr\u0131ter/notes.md'), caseInsensitive), true)
+    assert.equal(asks(write('../WORKSPACE-WRITER/notes.md'), caseInsensitive), false)
   })
 
   it('gates an apply_patch when one of its files is protected', () => {
@@ -146,6 +279,34 @@ describe('the gateway working folder .env', () => {
     const withGatewayEnv = { ...locations, configFiles: [...locations.configFiles, join(project, '.env')] }
     assert.equal(asks(write(join(project, '.env')), system, withGatewayEnv), true)
     assert.equal(asks(write(join(project, 'src', '.env')), system, withGatewayEnv), false)
+  })
+
+  it('gates it when the path carries an </arg_value>> tail that OpenClaw strips before writing', () => {
+    const withGatewayEnv = { ...locations, configFiles: [...locations.configFiles, join(project, '.env')] }
+    for (const path of [`${join(project, '.env')}</arg_value>>`, `${join(project, '.env')}</arg_value>> </arg_value>>`, `${join(project, '.env')}</arg_value>>/`, `${join(project, '.env')}</arg_value>>/x/..`]) {
+      assert.equal(asks(write(path), system, withGatewayEnv), true, path)
+    }
+    const moved = { ...locations, configFiles: [join(root, 'etc', 'claw.json')] }
+    assert.equal(asks(edit(`${join(root, 'etc', 'claw.json')}</arg_value>>`), system, moved), true)
+  })
+
+  it('gates it when OpenClaw strips the tail again after resolving the path, as workspace-only setups do', () => {
+    const gatewayEnv = join(project, '.env')
+    const config = join(root, 'etc', 'claw.json')
+    const protectedFiles = { ...locations, configFiles: [...locations.configFiles, gatewayEnv, config] }
+    for (const path of [
+      `${gatewayEnv}</arg_value>>/</arg_value>>`,
+      `${join(project, 'src')}/../.env</arg_value>>/</arg_value>>`,
+      `file://${gatewayEnv}%3C/arg_value%3E%3E`,
+      `FILE://${gatewayEnv}%3c/arg_value%3e%3e`,
+      `file://${gatewayEnv}</arg_value>>?q`,
+      `file://${gatewayEnv}</arg_value>>#h`,
+      `@file://${gatewayEnv}</arg_value>>?`,
+      `${config}</arg_value>>/</arg_value>>`,
+      `file://${config}%3C/arg_value%3E%3E`,
+    ]) {
+      assert.equal(asks(write(path), system, protectedFiles), true, path)
+    }
   })
 })
 
@@ -228,6 +389,13 @@ describe('paths it cannot resolve with certainty ask', () => {
 })
 
 describe('ordinary coding runs without asking', () => {
+  it('lets a home path that climbs back out through, wherever the gateway started', () => {
+    for (const guard of [system, { ...system, otherWorkingDirectories: [state] }, { ...system, workspaceFor: () => null }]) {
+      assert.equal(asks(write(`~/../project/src/a.ts`), guard), false)
+      assert.equal(asks(write(join(project, 'src', 'a.ts')), guard), false)
+    }
+  })
+
   it('lets writes and edits in the workspace under the state directory, or in a project, through', () => {
     assert.equal(asks(write('src/app.ts')), false)
     assert.equal(asks(edit(join(workspace, 'notes.md'))), false)

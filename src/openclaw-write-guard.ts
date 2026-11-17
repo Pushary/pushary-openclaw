@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { OpenClawPluginApi } from './host-api.js'
 import { openClawEnvironmentOf, openClawPathsFrom, ownedPluginFolderIn } from './openclaw-paths.js'
-import { nodeRealpath, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type FileWriteCall, type OpenClawStateLocations, type ServiceFileLocation, type WriteGuardSystem } from './protected-writes.js'
+import { nodeMayBeSymbolicLink, nodeRealpath, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type FileWriteCall, type OpenClawStateLocations, type ServiceFileLocation, type WriteGuardSystem } from './protected-writes.js'
 import { DEFAULT_OPENCLAW_AGENT_ID } from './settings.js'
 
 const CASE_INSENSITIVE_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set(['darwin', 'win32'])
@@ -106,6 +106,7 @@ export const openClawWriteGuardFor = (api: OpenClawPluginApi): ((call: FileWrite
   const system: WriteGuardSystem = {
     osHome,
     realpath: nodeRealpath,
+    mayBeSymbolicLink: nodeMayBeSymbolicLink,
     caseInsensitive: CASE_INSENSITIVE_PLATFORMS.has(process.platform),
     workspaceFor: workspaceFrom(api),
     otherWorkingDirectories: [process.cwd()],
