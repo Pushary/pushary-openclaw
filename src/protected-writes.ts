@@ -39,8 +39,10 @@ export interface OpenClawStateLocations {
 
 export interface WriteGuardSystem {
   readonly osHome: string
+  readonly openClawHome: string
   readonly realpath: (path: string) => string
   readonly mayBeSymbolicLink: (path: string) => boolean
+  readonly hasOtherNames: (path: string) => boolean
   readonly caseInsensitive: boolean
   readonly workspaceFor: (agentId: string | undefined) => string | null
   readonly otherWorkingDirectories: readonly string[]
@@ -60,6 +62,7 @@ interface ComparablePaths {
   readonly protectedTrees: readonly string[]
   readonly serviceFiles: readonly ServiceFileLocation[]
   readonly workspace: string | null
+  readonly workspaceSpellings: readonly string[]
   readonly workspaceFoldersOpenClawLoads: readonly string[]
   readonly riskyRelativeStarts: ReadonlySet<string>
   readonly locationsFoldAsTheDiskDoes: boolean
@@ -130,6 +133,7 @@ const comparablePathsFor = (locations: OpenClawStateLocations, system: WriteGuar
   const stateDirectories = spellingsOfAll(locations.stateDirectories, system)
   const workspace = system.workspaceFor(agentId)
   const workspaceCanonical = workspace === null ? null : canonicalPathOf(workspace, system)
+  const comparableWorkspace = workspaceCanonical === null ? null : comparable(workspaceCanonical, system)
   return {
     locationsFoldAsTheDiskDoes: !system.caseInsensitive || locationSpellingsOf(locations, system, workspace).every(foldsAsTheDiskDoes),
     stateDirectories,
@@ -137,7 +141,8 @@ const comparablePathsFor = (locations: OpenClawStateLocations, system: WriteGuar
     protectedTrees: spellingsOfAll(locations.protectedTrees, system),
     serviceFiles: locations.serviceFiles.flatMap(location =>
       spellingsOfLocation(location.directory, system).map(directory => ({ directory, namePrefix: comparable(location.namePrefix, system) }))),
-    workspace: workspaceCanonical === null ? null : comparable(workspaceCanonical, system),
+    workspace: comparableWorkspace,
+    workspaceSpellings: workspace === null || comparableWorkspace === null ? [] : [...new Set([comparableWorkspace, resolve(workspace)])],
     workspaceFoldersOpenClawLoads: WORKSPACE_FOLDERS_OPENCLAW_LOADS.map(folder => comparable(folder, system)),
     riskyRelativeStarts: new Set([
       ...locations.stateDirectories.map(state => comparable(basename(state), system)),
@@ -176,7 +181,7 @@ const foldCanBeTrustedFor = (path: string, paths: ComparablePaths, system: Write
 
 const verdictForAbsolute = (path: string, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
   const canonical = canonicalPathOf(path, system)
-  if (canonical === null || !foldCanBeTrustedFor(canonical, paths, system)) return 'uncertain'
+  if (canonical === null || system.hasOtherNames(canonical) || !foldCanBeTrustedFor(canonical, paths, system)) return 'uncertain'
   return isProtectedLocation(comparable(canonical, system), paths) ? 'protected' : 'clear'
 }
 
@@ -226,18 +231,18 @@ const ancestorsUpTo = (directory: string, levels: number): readonly string[] => 
   return ancestors
 }
 
-const landingPlacesOf = (relativePath: string, workspace: string, others: readonly string[]): readonly string[] => {
+const landingPlacesOf = (relativePath: string, workspaces: readonly string[], others: readonly string[]): readonly string[] => {
   const climbs = leadingClimbsOf(relativePath)
   const rest = normalize(relativePath).split(/[\\/]/).slice(climbs).join(sep)
-  const fromInsideTheWorkspace = ancestorsUpTo(workspace, climbs).map(base => join(base, rest))
-  return [...fromInsideTheWorkspace, resolve(workspace, relativePath), ...others.map(directory => resolve(directory, relativePath))]
+  const fromInsideTheWorkspace = workspaces.flatMap(workspace => ancestorsUpTo(workspace, climbs).map(base => join(base, rest)))
+  return [...fromInsideTheWorkspace, ...[...workspaces, ...others].map(directory => resolve(directory, relativePath))]
 }
 
 const verdictForPath = (path: string, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
   if (isAbsolute(path)) return verdictForAbsolute(path, paths, system)
   if (paths.riskyRelativeStarts.has(comparable(firstComponentOf(path), system))) return 'protected'
   if (paths.workspace === null) return 'uncertain'
-  return worstOf(landingPlacesOf(path, paths.workspace, system.otherWorkingDirectories).map(place => verdictForAbsolute(place, paths, system)))
+  return worstOf(landingPlacesOf(path, paths.workspaceSpellings, system.otherWorkingDirectories).map(place => verdictForAbsolute(place, paths, system)))
 }
 
 export const withoutHostArgumentTails = (path: string): string => path.replace(HOST_PATH_ARGUMENT_TAILS, '').trim()
@@ -306,15 +311,32 @@ export const startsAnAcpSession = (params: Readonly<Record<string, unknown>>): b
 const namesAFolderItCannotSee = (params: Readonly<Record<string, unknown>>): boolean =>
   SPAWN_SOURCES_IT_CANNOT_SEE.some(name => params[name] !== undefined && params[name] !== false)
 
-const spawnFolderVerdict = (raw: unknown, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
-  if (typeof raw !== 'string' || raw.trim().length === 0 || paths.workspace === null) return 'uncertain'
-  const expanded = absoluteOrRelative(raw.trim(), system.osHome)
-  if (expanded === null) return 'uncertain'
-  const canonical = canonicalPathOf(resolve(paths.workspace, expanded), system)
+const spawnFolderReadingsOf = (raw: string, system: WriteGuardSystem): readonly string[] | null => {
+  const readings: string[] = []
+  for (const home of [system.osHome, system.openClawHome]) {
+    const decoded = absoluteOrRelative(raw, home)
+    if (decoded === null) return null
+    readings.push(decoded, expandedHome(raw, home))
+  }
+  return [...new Set(readings)]
+}
+
+const spawnFolderPlacesOf = (readings: readonly string[], paths: ComparablePaths, system: WriteGuardSystem): readonly string[] =>
+  readings.flatMap(reading => [...paths.workspaceSpellings, ...system.otherWorkingDirectories].map(directory => resolve(directory, reading)))
+
+const spawnPlaceVerdict = (place: string, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
+  const canonical = canonicalPathOf(place, system)
   if (canonical === null || !foldCanBeTrustedFor(canonical, paths, system)) return 'uncertain'
   const folder = comparable(canonical, system)
-  if (!isSameOrInside(folder, paths.workspace)) return 'protected'
+  if (paths.workspace === null || !isSameOrInside(folder, paths.workspace)) return 'protected'
   return isInAWorkspaceFolderOpenClawLoads(folder, paths) ? 'protected' : 'clear'
+}
+
+const spawnFolderVerdict = (raw: unknown, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {
+  if (typeof raw !== 'string' || raw.trim().length === 0 || paths.workspace === null) return 'uncertain'
+  const readings = spawnFolderReadingsOf(raw.trim(), system)
+  if (readings === null) return 'uncertain'
+  return worstOf(spawnFolderPlacesOf(readings, paths, system).map(place => spawnPlaceVerdict(place, paths, system)))
 }
 
 export const spawnsOutsideTheWorkspace = (locations: OpenClawStateLocations, system: WriteGuardSystem, call: FileWriteCall): boolean => {
@@ -330,6 +352,15 @@ export const nodeRealpath = (path: string): string => realpathSync(path)
 export const nodeMayBeSymbolicLink = (path: string): boolean => {
   try {
     return lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true
+  } catch {
+    return true
+  }
+}
+
+export const nodeHasOtherNames = (path: string): boolean => {
+  try {
+    const entry = lstatSync(path, { throwIfNoEntry: false })
+    return entry !== undefined && !entry.isDirectory() && entry.nlink > 1
   } catch {
     return true
   }

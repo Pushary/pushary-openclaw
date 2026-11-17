@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import type { OpenClawBeforeToolCallEvent } from './host-api.js'
-import { nodeMayBeSymbolicLink, nodeRealpath, patchTargetsOf, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type OpenClawStateLocations, type WriteGuardSystem } from './protected-writes.js'
+import { nodeHasOtherNames, nodeMayBeSymbolicLink, nodeRealpath, patchTargetsOf, spawnsOutsideTheWorkspace, writesIntoOpenClaw, type OpenClawStateLocations, type WriteGuardSystem } from './protected-writes.js'
 
 let root = ''
 let home = ''
@@ -31,7 +31,7 @@ beforeEach(() => {
       { directory: join(home, '.config', 'systemd', 'user'), namePrefix: 'openclaw' },
     ],
   }
-  system = { osHome: home, realpath: nodeRealpath, mayBeSymbolicLink: nodeMayBeSymbolicLink, caseInsensitive: false, workspaceFor: () => workspace, otherWorkingDirectories: [] }
+  system = { osHome: home, openClawHome: home, realpath: nodeRealpath, mayBeSymbolicLink: nodeMayBeSymbolicLink, hasOtherNames: nodeHasOtherNames, caseInsensitive: false, workspaceFor: () => workspace, otherWorkingDirectories: [] }
 })
 
 afterEach(() => rmSync(root, { recursive: true, force: true }))
@@ -222,8 +222,6 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
     assert.equal(spawn({ cwd: `~/.openclaw/ws-${'ͅ'.repeat(9)}` }, { ...caseInsensitive, workspaceFor: () => iotas }), true)
     const subscripts = join(state, `ws-${'ͅ'.repeat(9)}`)
     assert.equal(asks(write(`~/.openclaw/ws-${'ι'.repeat(9)}/notes.md`), { ...caseInsensitive, workspaceFor: () => subscripts }), true)
-    const thorn = join(home, 'proj-꟒')
-    assert.equal(asks(write('~/proj-ꟓ/hooks/x.js'), { ...caseInsensitive, workspaceFor: () => thorn }), true)
     assert.equal(asks(write('~/proj-͸/notes.md'), caseInsensitive), true)
     const replacement = join(home, 'proj-�')
     assert.equal(asks(write('~/proj-\ud800/hooks/x.js'), { ...caseInsensitive, workspaceFor: () => replacement }), true)
@@ -355,8 +353,68 @@ describe('a session spawned into another folder', () => {
     assert.equal(spawn({ cwd: join(workspace, 'sub') }, { ...system, workspaceFor: () => null }), true)
   })
 
+  it('judges a relative folder from the gateway working folder too, where OpenClaw resolves it', () => {
+    const gateway = join(home, 'gateway')
+    mkdirSync(gateway)
+    assert.equal(spawn({ cwd: 'sub' }, { ...system, otherWorkingDirectories: [gateway] }), true)
+    assert.equal(spawn({ cwd: 'sub' }, { ...system, otherWorkingDirectories: [state] }), true)
+    assert.equal(spawn({ cwd: 'sub' }, { ...system, otherWorkingDirectories: [workspace] }), false)
+    assert.equal(spawn({ cwd: join(workspace, 'sub') }, { ...system, otherWorkingDirectories: [gateway] }), false)
+  })
+
+  it('reads ~ with the home OpenClaw expands it with, which OPENCLAW_HOME can move', () => {
+    assert.equal(spawn({ cwd: '~/.openclaw/workspace/sub' }), false)
+    assert.equal(spawn({ cwd: '~/.openclaw/workspace/sub' }, { ...system, openClawHome: join(root, 'claw-home') }), true)
+  })
+
+  it('reads a file URL as the literal folder OpenClaw would use as well', () => {
+    assert.equal(spawn({ cwd: `file://${workspace}` }), false)
+    assert.equal(spawn({ cwd: `file://${workspace}` }, { ...system, otherWorkingDirectories: [state] }), true)
+  })
+
   it('never looks at other tools', () => {
     assert.equal(spawnsOutsideTheWorkspace(locations, system, { toolId: 'write', event: { toolName: 'write', params: { cwd: state } }, agentId: undefined }), false)
+  })
+})
+
+describe('a workspace reached through a symbolic link', () => {
+  it('lands a relative path from the workspace as OpenClaw names it, as well as where the link leads', () => {
+    const linked = join(state, 'linked-workspace')
+    symlinkSync(project, linked)
+    const guard: WriteGuardSystem = { ...system, workspaceFor: () => linked }
+    const update = ['*** Begin Patch', '*** Update File: ../openclaw.json', '@@', '-{}', '+{"x":1}', '*** End Patch'].join('\n')
+    assert.equal(asks(write('../openclaw.json'), guard), true)
+    assert.equal(asks(edit('../openclaw.json'), guard), true)
+    assert.equal(asks(patch(update), guard), true)
+    assert.equal(asks(write('hooks/x.js'), guard), true)
+    assert.equal(asks(write('src/app.ts'), guard), false)
+    assert.equal(asks(write(join(linked, 'src', 'app.ts')), guard), false)
+    assert.equal(spawn({ cwd: 'src' }, { ...guard, otherWorkingDirectories: [linked] }), false)
+    assert.equal(spawn({ cwd: '..' }, { ...guard, otherWorkingDirectories: [linked] }), true)
+  })
+})
+
+describe('a file with more than one name', () => {
+  it('asks for a write, edit or patch of a hard link, which changes the file under every name', () => {
+    mkdirSync(join(workspace, 'docs'))
+    const notes = join(workspace, 'docs', 'notes.md')
+    linkSync(join(state, 'openclaw.json'), notes)
+    const update = ['*** Begin Patch', '*** Update File: docs/notes.md', '@@', '-{}', '+{"x":1}', '*** End Patch'].join('\n')
+    assert.equal(asks(write('docs/notes.md')), true)
+    assert.equal(asks(edit(notes)), true)
+    assert.equal(asks(patch(update, [notes])), true)
+  })
+
+  it('lets a file with one name, a new file and a folder through', () => {
+    mkdirSync(join(workspace, 'docs'))
+    writeFileSync(join(workspace, 'docs', 'notes.md'), 'x')
+    assert.equal(asks(write('docs/notes.md')), false)
+    assert.equal(asks(write('docs/new.md')), false)
+    assert.equal(asks(write('docs/')), false)
+  })
+
+  it('asks when it cannot tell how many names a file has', () => {
+    assert.equal(asks(write('src/app.ts'), { ...system, hasOtherNames: () => true }), true)
   })
 })
 
