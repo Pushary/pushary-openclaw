@@ -14,7 +14,8 @@ const PATCH_PARAMETER = 'input'
 const PATCH_TARGET_MARKERS: readonly string[] = [...PATCH_FILE_MARKERS, PATCH_MOVE_MARKER]
 const FILE_URL_PREFIX = 'file://'
 const HOST_PATH_ARGUMENT_TAILS = /(?:<\/arg_value>>+\s*)+$/
-const NOT_PLAIN_PATH_CHARACTER = /[\u0000-\u001f\u007f%?#<>|*"]/
+const NOT_PLAIN_PATH_CHARACTER = /[\u0000-\u001f\u007f?<>|*"]/
+const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/
 const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:[\\/]/
 const PATH_SCHEME_SEPARATOR = ':'
 const FILE_REFERENCE_PREFIX = '@'
@@ -258,7 +259,7 @@ export const withoutHostArgumentTails = (path: string): string => path.replace(H
 export const isPlainPath = (path: string): boolean => {
   if (path !== path.trim()) return false
   const rest = path.replace(WINDOWS_DRIVE_PREFIX, '')
-  return !NOT_PLAIN_PATH_CHARACTER.test(rest) && !rest.includes(PATH_SCHEME_SEPARATOR)
+  return !NOT_PLAIN_PATH_CHARACTER.test(rest) && !PERCENT_ESCAPE.test(rest) && !rest.includes(PATH_SCHEME_SEPARATOR)
 }
 
 const verdictForSpelling = (spelling: string, paths: ComparablePaths, system: WriteGuardSystem): PathVerdict => {

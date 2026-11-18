@@ -272,14 +272,14 @@ describe('a file change', () => {
     }
   })
 
-  it('withholds the contents for a path that is not plain, such as one with a URL scheme, a colon or a percent sign', () => {
-    for (const path of ['file:///w/notes.txt?.env', 'notes:stream.txt', 'a%20b.txt', 'notes#1.md', ' src/app.ts', 'src/app.ts ', '\tsrc/app.ts']) {
+  it('withholds the contents for a path that is not plain, such as one with a URL scheme, a colon, a question mark or a percent escape', () => {
+    for (const path of ['file:///w/notes.txt?.env', 'file:///w/C%23/.env', 'notes:stream.txt', 'notes?.md', 'C#/a*.cs', 'a%20b.txt', 'src/%2Eenv', '..%2f.env', ' src/app.ts', 'src/app.ts ', '\tsrc/app.ts', 'src/C#/.env', 'C#/.env.local', '100%/gateway.env']) {
       const question = questionOf({ toolName: 'write', params: { path, content: 'release notes line' } })
       assert.doesNotMatch(outgoingTextOf(question), /release notes line/, JSON.stringify(path))
       const edited = questionOf({ toolName: 'edit', params: { path, edits: [{ oldText: 'a', newText: 'release notes line' }] } })
       assert.doesNotMatch(outgoingTextOf(edited), /release notes line/, JSON.stringify(path))
     }
-    for (const path of ['src/app.ts', 'C:\\repo\\src\\app.ts', '~/notes (draft).md', 'docs/café.md']) {
+    for (const path of ['src/app.ts', 'C:\\repo\\src\\app.ts', '~/notes (draft).md', 'docs/café.md', 'src/C#/Program.cs', 'notes#1.md', '100%.md']) {
       const question = questionOf({ toolName: 'write', params: { path, content: 'release notes line' } })
       assert.match(question.actionBody, /release notes line/, path)
     }

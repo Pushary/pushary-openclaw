@@ -84,7 +84,8 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
       'hooks/.. ', '.openclaw/.. ',
       '.env<//arg_value>>', '.env</./arg_value>>', '.env</x/../arg_value>>', '@.env<//arg_value>>',
       'file:///../hooks/x%5C.js', 'file:///../.openclaw/extensions/p/index%5C.js',
-      'notes:stream.txt', 'a%20b.txt',
+      'notes:stream.txt', 'a%20b.txt', '..%2fopenclaw.json', '..%2F..%2Fopenclaw.json', '%2E%2E/hooks/x.js', 'hooks%2fx.js', 'src/%2Eenv', 'C%23/Program.cs',
+      'C#/a?.cs', 'C#/*.cs', 'C#/a|b.cs', 'C#/"a".cs', 'C#/x.cs</arg_value>>', 'src/C#/\u0000.cs', `file://${join(project, 'C#', 'a.cs')}#L1`,
     ]) {
       assert.equal(asks(write(path)), true, JSON.stringify(path))
       assert.equal(asks(edit(path)), true, JSON.stringify(path))
@@ -92,6 +93,31 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
     for (const path of ['src/app.ts', 'C:\\repo\\src\\app.ts', '~/notes (draft).md', 'docs/café.md', '@scope/pkg/index.ts', 'src/../lib/a.ts']) {
       assert.equal(asks(write(path)), false, JSON.stringify(path))
     }
+  })
+
+  it('judges a path with # or a bare % by where it lands, since OpenClaw reads both as ordinary characters outside a URL', () => {
+    for (const path of [
+      'src/C#/Program.cs', 'C#/Program.cs', '@src/C#/Program.cs', './F#/lib.fs', join(project, 'C#', 'Program.cs'), '~/projects/C#/app.cs',
+      'notes#1.md', '#todo.md', '100%.md', '50% off/plan.md', 'src/%/a.ts', 'a%zz.txt',
+    ]) {
+      assert.equal(asks(write(path)), false, JSON.stringify(path))
+      assert.equal(asks(edit(path)), false, JSON.stringify(path))
+    }
+    assert.equal(asks(patch('*** Begin Patch\n*** Add File: src/C#/Program.cs\n+class P {}\n*** Update File: notes#1.md\n@@\n-a\n+b\n*** End Patch')), false)
+    assert.equal(asks(patch('*** Begin Patch\n*** Add File: src/C#/Program.cs\n+class P {}\n*** End Patch', [join(workspace, 'src', 'C#', 'Program.cs')])), false)
+  })
+
+  it('still gates a protected place whose path has # or a bare %', () => {
+    for (const path of [
+      join('hooks', 'C#', 'handler.js'), join('.openclaw', 'extensions', 'p#1', 'index.js'), join('..', 'C#', '..', 'openclaw.json'), join('..', '%2E', '..', '..', '.openclaw', 'openclaw.json'),
+      join(state, 'conf#', 'agents.json5'), join(state, 'openclaw.json#'), '~/.pushary/100%/config.json', '~/.openclaw/hooks/#x/handler.js', '@hooks/C#/handler.js',
+      '.pushary/#/x', '.config/openclaw/%gateway.env',
+    ]) {
+      assert.equal(asks(write(path)), true, JSON.stringify(path))
+      assert.equal(asks(edit(path)), true, JSON.stringify(path))
+    }
+    assert.equal(asks(patch('*** Begin Patch\n*** Add File: src/C#/Program.cs\n+class P {}\n*** Add File: hooks/C#/handler.js\n+x\n*** End Patch')), true)
+    assert.equal(asks(patch('*** Begin Patch\n*** Add File: src/C#/Program.cs\n+class P {}\n*** End Patch', [join(workspace, 'hooks', 'C#', 'handler.js')])), true)
   })
 
   it('gates a file URL that OpenClaw reads as a relative path and that climbs into protected places', () => {
@@ -164,6 +190,15 @@ describe('every write inside OpenClaw state asks, outside the agent workspace', 
 
   it('gates a differently cased spelling on a case-insensitive disk', () => {
     assert.equal(asks(write(join(state, 'OpenClaw.JSON')), { ...system, caseInsensitive: true }), true)
+  })
+
+  it('folds a path with # on a case-insensitive disk like any other path', () => {
+    const caseInsensitive = { ...system, caseInsensitive: true }
+    for (const path of ['HOOKS/C#/handler.js', 'Hooks/#x/handler.js', join(state, 'Conf#', 'x.json'), '~/.OpenClaw/hooks/C#/handler.js', '.OPENCLAW/extensions/p#1/index.js']) {
+      assert.equal(asks(write(path), caseInsensitive), true, JSON.stringify(path))
+      assert.equal(asks(edit(path), caseInsensitive), true, JSON.stringify(path))
+    }
+    assert.equal(asks(write('SRC/C#/Program.cs'), caseInsensitive), false)
   })
 
   it('gates a spelling a case-insensitive disk folds to a protected name, such as a long s or a ligature', () => {
