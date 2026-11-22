@@ -9,6 +9,17 @@ export interface DecisionStopFields {
 }
 export const isDecisionStoppedReply = (reply: DecisionStopFields): boolean => reply.handoffAction === STOP_HANDOFF_ACTION || (typeof reply.status === 'string' && DECISION_STOP_STATUSES.includes(reply.status));
 export const isApprovingAnswer = (answer: string): boolean => answer === APPROVE_ANSWER;
+export interface AskReach {
+    readonly status?: string;
+    readonly suppressed?: boolean;
+    readonly noDevices?: boolean;
+    readonly paused?: unknown;
+    readonly answered?: boolean;
+}
+export const isAwayPaused = (result: Pick<AskReach, 'paused'>): boolean => result.paused === true;
+export const isLocalQuestionHandoff = (result: AskReach): boolean => !isAwayPaused(result)
+    && (result.suppressed === true || result.noDevices === true || result.status === 'terminal' || result.status === 'notified');
+export const waitsForThePhone = (result: AskReach): boolean => result.answered !== true && !isAwayPaused(result) && !isLocalQuestionHandoff(result);
 export interface AskUserReply {
     readonly correlationId: string;
     readonly status: string;
