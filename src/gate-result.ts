@@ -4,7 +4,7 @@ import { MIN_HOST_VERSION } from './host-version.js'
 import type { GateOutcome } from './gate.js'
 import type { OpenClawApprovalDecision, OpenClawBeforeToolCallResult } from './host-api.js'
 
-export const SETUP_COMMAND = 'npx pushary@latest setup --agents openclaw'
+export const SETUP_COMMAND = 'npx -y pushary@latest setup --agents openclaw'
 export const DEVICES_URL = 'https://pushary.com/dashboard/agent/settings'
 export const HAND_BACK_DECISIONS: readonly OpenClawApprovalDecision[] = ['allow-once', 'deny']
 

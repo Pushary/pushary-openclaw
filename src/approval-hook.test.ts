@@ -281,7 +281,7 @@ describe('every other outcome blocks the call', () => {
   it('says how to add a key whichever way the plugin was installed', async () => {
     stub = await startPusharyStub(() => reply(PENDING_QUESTION))
     const handler = createApprovalGateHandler({ settings: { gatedTools: DEFAULT_GATED_TOOLS }, holdMs: SHORT_HOLD_MS, withdrawReserveMs: WITHDRAW_RESERVE_FOR_TESTS_MS, handBackSurface: 'openclaw_prompt', reachesOpenClawState: () => false }, environmentFor(stub.baseUrl, { kind: 'missing_api_key' }))
-    assertBlocked(await handler(EXEC_CALL, CONTEXT), /Run npx pushary@latest setup --agents openclaw, or create an API key at https:\/\/pushary\.com\/dashboard\/agent\/settings and add PUSHARY_API_KEY=<key> to ~\/\.openclaw\/\.env, then restart the OpenClaw gateway\./)
+    assertBlocked(await handler(EXEC_CALL, CONTEXT), /Run npx -y pushary@latest setup --agents openclaw, or create an API key at https:\/\/pushary\.com\/dashboard\/agent\/settings and add PUSHARY_API_KEY=<key> to ~\/\.openclaw\/\.env, then restart the OpenClaw gateway\./)
   })
 
   it('blocks a call too long to show in full without calling Pushary', async () => {

@@ -11,7 +11,7 @@ It is built for an OpenClaw that runs for you alone, often always on, on a small
 Run the Pushary CLI on the machine that runs OpenClaw, as the user the gateway runs as:
 
 ```bash
-npx pushary@latest setup --agents openclaw
+npx -y pushary@latest setup --agents openclaw
 ```
 
 Setup signs you in, saves your key in `~/.pushary/config.json`, writes this plugin to `~/.pushary/openclaw-plugin`, and runs:
@@ -21,7 +21,7 @@ openclaw plugins install ~/.pushary/openclaw-plugin --force --accept-capabilitie
 openclaw plugins enable pushary --accept-capabilities
 ```
 
-The CLI carries the plugin itself, so `npx pushary@latest upgrade`, or running setup again, installs the newer copy. A running gateway picks up the plugin when the install finishes; a stopped one loads it at its next start. Check it with:
+The CLI carries the plugin itself, so `npx -y pushary@latest upgrade`, or running setup again, installs the newer copy. A running gateway picks up the plugin when the install finishes; a stopped one loads it at its next start. Check it with:
 
 ```bash
 openclaw plugins inspect pushary --runtime --json
@@ -126,7 +126,7 @@ With no key, every gated call is blocked and the reason says how to fix it.
 ## Removing it
 
 ```bash
-npx pushary@latest clean
+npx -y pushary@latest clean
 ```
 
 Clean uninstalls the plugin and puts back the `plugins.entries.pushary` settings you had before setup. Without the plugin, OpenClaw's own exec approvals still apply, and nothing reaches your phone.
