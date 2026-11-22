@@ -4,6 +4,26 @@ Phone approvals for [OpenClaw](https://openclaw.ai). Before your OpenClaw agent 
 
 It is built for an OpenClaw that runs for you alone, often always on, on a small VPS. It works on the Agent and Agent Pro plans, with push approvals on your phone. Phone calls are not available for OpenClaw yet.
 
+## What you get after you sign in
+
+1. Sign in and pick a plan. New customers start with a 3-day trial.
+2. Run `npx -y pushary@latest setup --agents openclaw` on the machine that runs OpenClaw. It installs this plugin and saves your key.
+3. Before OpenClaw runs a gated tool call, the request arrives on your phone (the Pushary app for iOS and Android), on your Mac, or in the dashboard.
+4. You tap Approve and the call runs. Anything else blocks it. The dashboard keeps a record of what each agent asked and what you answered.
+
+Read the [OpenClaw guide](https://pushary.com/docs/agents/guides/openclaw?utm_source=github&utm_medium=oss-adapter&utm_campaign=pushary-openclaw&utm_content=readme) for each step, or see [OpenClaw approvals on your phone](https://pushary.com/human-in-the-loop-openclaw?utm_source=github&utm_medium=oss-adapter&utm_campaign=pushary-openclaw&utm_content=readme).
+
+## Plans
+
+Each plan starts with a 3-day trial for new customers.
+
+| Plan | Price | What you get |
+| --- | --- | --- |
+| [Agent](https://pushary.com/pricing?utm_source=github&utm_medium=oss-adapter&utm_campaign=pushary-openclaw&utm_content=readme) | $9.99 a month | One person and every AI agent they run. Approve, deny or answer from your phone or Mac. |
+| [Agent Pro](https://pushary.com/pricing?utm_source=github&utm_medium=oss-adapter&utm_campaign=pushary-openclaw&utm_content=readme) | $19.99 a month | Everything in Agent, plus unlimited notifications, budgets and priority support. |
+
+[Phone calls](https://pushary.com/calls?utm_source=github&utm_medium=oss-adapter&utm_campaign=pushary-openclaw&utm_content=readme) work for Claude Code, Codex, Hermes and the other agents listed there, not yet for OpenClaw.
+
 ## Install
 
 ### With the Pushary CLI (recommended)
@@ -144,6 +164,12 @@ Clean uninstalls the plugin and puts back the `plugins.entries.pushary` settings
 - Pushary's tool rules from the dashboard are not evaluated on the machine. Every gated call asks.
 - Another plugin that rewrites tool parameters can change what runs, including a plugin that runs before this one: OpenClaw gives each plugin its own copy of the call and keeps the earlier plugin's rewrite. Pushary shows and approves the parameters it was given.
 - The wait is held inside one gateway process. If the gateway restarts during a wait, OpenClaw drops the call and the question stays in Pushary until it expires.
+
+## Related repositories
+
+- [Pushary plugin for Hermes](https://github.com/Pushary/hermes-plugin-pushary): phone approvals for Hermes Agent, another agent that often runs always on.
+- [Pushary skill](https://github.com/Pushary/pushary-skill): the skill, and `npx -y pushary@latest setup` for Claude Code, Codex, Gemini CLI and more.
+- [Pushary for Mac](https://github.com/Pushary/pushary-mac): answer from the notch on your Mac.
 
 ## License
 
