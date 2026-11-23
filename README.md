@@ -57,10 +57,15 @@ PUSHARY_API_KEY=pk_your_key
 
 ### From ClawHub or npm
 
+Install from ClawHub after reviewing the plugin's requested capabilities:
+
 ```bash
-openclaw plugins install @pushary/openclaw        # ClawHub
-openclaw plugins install npm:@pushary/openclaw    # npm
+openclaw plugins install @pushary/openclaw --accept-capabilities
+openclaw plugins enable pushary --accept-capabilities
+openclaw plugins inspect pushary --runtime --json
 ```
+
+Look for `before_tool_call` under `typedHooks`. On OpenClaw 2026.11.7, installing the npm source (`npm:@pushary/openclaw`) also requires you to review and confirm that source. The ClawHub commands above use the marketplace listing.
 
 Then give it a key. Create one at [pushary.com/dashboard/agent/settings](https://pushary.com/dashboard/agent/settings), add `PUSHARY_API_KEY=pk_your_key` to `~/.openclaw/.env`, connect your phone on the same page, and restart the gateway. Until it has a key, every gated call is blocked and the reason says how to add one. `openclaw plugins update pushary` follows newer releases.
 
